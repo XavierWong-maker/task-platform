@@ -4,8 +4,8 @@ from task_platform.executor import cancel_before_start, execute
 
 
 def test_execute_success_path() -> None:
-    jobs = build_jobs()
     registry = build_registry()
+    jobs = build_jobs(registry)
     job = jobs["demo-success"]
 
     execution = execute(job, registry)
@@ -19,8 +19,8 @@ def test_execute_success_path() -> None:
 
 
 def test_execute_failure_path_still_records_state() -> None:
-    jobs = build_jobs()
     registry = build_registry()
+    jobs = build_jobs(registry)
     job = jobs["demo-failure"]
 
     execution = execute(job, registry)
@@ -34,7 +34,8 @@ def test_execute_failure_path_still_records_state() -> None:
 
 
 def test_cancel_before_start() -> None:
-    jobs = build_jobs()
+    registry = build_registry()
+    jobs = build_jobs(registry)
     job = jobs["demo-slow"]
 
     execution = cancel_before_start(job)

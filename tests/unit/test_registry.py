@@ -1,6 +1,6 @@
 import pytest
 
-from task_platform.jobs.dome_jobs import demo_failure, demo_success
+from task_platform.jobs.demo_jobs import demo_failure, demo_success
 from task_platform.registry import (
     DuplicateJobNameError,
     JobNotRegisteredError,

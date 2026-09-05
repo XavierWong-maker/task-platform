@@ -92,6 +92,8 @@ class JobExecution:
     started_at: datetime | None = None
     finished_at: datetime | None = None
     error_message: str | None = None
+    timeout_seconds: float | None = None
+    max_attempts: int | None = None
 
     @property
     def duration_seconds(self) -> float:

@@ -40,6 +40,7 @@ class JobType(StrEnum):
     DEMO_SUCCESS = "DEMO_SUCCESS"
     DEMO_FAILURE = "DEMO_FAILURE"
     DEMO_SLOW = "DEMO_SLOW"
+    CUSTOM = "CUSTOM"  # discover_jobs 发现但无显式 Job 定义的任务
 
 
 class BackoffStrategy(StrEnum):
