@@ -43,18 +43,16 @@ def _build_job_from_handler(handler: RegisteredHandler) -> Job:
     timeout_seconds / retry_policy 若 handler 上有元数据（来自 @job 装饰器）
     则直接采用；否则退回 Job 的类默认值
     """
-    kwargs: dict[str, object] = {}
-    if handler.timeout_seconds is not None:
-        kwargs["timeout_seconds"] = handler.timeout_seconds
-    if handler.retry_policy is not None:
-        kwargs["retry_policy"] = handler.retry_policy
-
-    return Job(
+    job = Job(
         name=_auto_job_name(handler.name),
         job_type=JobType.CUSTOM,
         handler=handler.name,
-        **kwargs,
     )
+    if handler.timeout_seconds is not None:
+        job.timeout_seconds = handler.timeout_seconds
+    if handler.retry_policy is not None:
+        job.retry_policy = handler.retry_policy
+    return job
 
 
 def build_jobs(registry: TaskRegistry) -> dict[str, Job]:

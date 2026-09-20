@@ -14,14 +14,18 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 from task_platform.bootstrap import build_jobs, build_registry
+from task_platform.domain.enums import ScheduleType
+from task_platform.domain.schedule import Schedule
 from task_platform.executor import (
     cancel_before_start,
-    execute,
+    execute_attempt,
     resolve_retry_policy,
     resolve_timeout_seconds,
 )
+from task_platform.scheduler import Scheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -41,6 +45,22 @@ def _build_parser() -> argparse.ArgumentParser:
     cancel_parser = subparsers.add_parser("cancel", help="取消一个尚未开始运行的任务")
     cancel_parser.add_argument("name", help="任务名称")
 
+    serve_parser = subparsers.add_parser(
+        "serve", help="启动 Scheduler 主循环（阻塞运行，Ctrl+C 优雅退出）"
+    )
+    serve_parser.add_argument(
+        "--interval",
+        type=float,
+        default=5.0,
+        help="演示任务的触发间隔",
+    )
+    serve_parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=1.0,
+        help="Scheduler 主循环的轮询间隔",
+    )
+
     return parser
 
 
@@ -50,6 +70,29 @@ def main(argv: list[str] | None = None) -> int:
 
     registry = build_registry()
     jobs = build_jobs(registry)
+
+    if args.command == "serve":
+        # 占位实现：先阶段还没有持久化，暂时硬编码一个 demo-success 的 INTERVAL 调度
+        # 下一阶段引入 SQLite/Repository 后，这里应该改为从数据库加载所有已启用的 (Job, Schedule)
+        demo_job = jobs.get("demo-success")
+        if demo_job is None:
+            print("未找到 demo-success 任务，无法启动演示调度", file=sys.stderr)
+            return 1
+
+        scheduler = Scheduler(registry)
+        schedule = Schedule(
+            job_id=demo_job.id,
+            schedule_type=ScheduleType.INTERVAL,
+            interval_seconds=args.interval,
+        )
+        scheduler.add(demo_job, schedule)
+        print(
+            f"Scheduler 已启动：demo-success 每 {args.interval}s 触发一次，"
+            f"轮询间隔 {args.poll_interval}s。按 Ctrl+C 优雅退出。"
+        )
+        scheduler.run_forever(poll_interval_seconds=args.poll_interval)
+        print("Scheduler 已优雅退出。")
+        return 0
 
     if args.command == "list":
         if not jobs:
@@ -83,7 +126,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "run":
-            execution = execute(job, registry)
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="cli-run") as pool:
+                result = execute_attempt(job, registry, pool, attempt_number=1)
+            execution = result.execution
             print(
                 f"run_id={execution.run_id} status={execution.status.value} "
                 f"attempt={execution.attempt} duration={execution.duration_seconds:.3f}s "

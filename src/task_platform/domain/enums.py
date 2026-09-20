@@ -48,3 +48,10 @@ class BackoffStrategy(StrEnum):
 
     FIXED = "FIXED"
     EXPONENTIAL = "EXPONENTIAL"
+
+
+class ScheduleType(StrEnum):
+    """调度规则类型"""
+
+    INTERVAL = "INTERVAL"  # 固定间隔
+    DAILY = "DAILY"  # 简单 cron: 每天固定时刻

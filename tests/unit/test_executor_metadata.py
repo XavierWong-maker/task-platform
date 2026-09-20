@@ -6,9 +6,11 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from task_platform.domain.enums import BackoffStrategy, JobType
 from task_platform.domain.models import Job, RetryPolicy
-from task_platform.executor import execute
+from task_platform.executor import execute_attempt
 from task_platform.jobs.decorators import job
 from task_platform.registry import TaskRegistry
 
@@ -31,8 +33,12 @@ def test_handler_metadata_takes_precedence_over_job_defaults() -> None:
     assert demo_job.timeout_seconds == 30.0
     assert demo_job.retry_policy.max_attempts == 3
 
-    execution = execute(demo_job, registry)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        result = execute_attempt(demo_job, registry, pool, attempt_number=1)
+    execution = result.execution
 
+    assert execution.status.value  # SUCCESS，非空字符串即真
+    assert result.should_retry is False
     assert execution.timeout_seconds == 5.0
     assert execution.max_attempts == 7
 
@@ -49,7 +55,10 @@ def test_falls_back_to_job_defaults_when_handler_has_no_metadate() -> None:
         retry_policy=RetryPolicy(max_attempts=2),
     )
 
-    execution = execute(demo_job, registry)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        result = execute_attempt(demo_job, registry, pool, attempt_number=1)
+    execution = result.execution
 
+    assert result.should_retry is False
     assert execution.timeout_seconds == 15.0
     assert execution.max_attempts == 2
