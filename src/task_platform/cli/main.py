@@ -17,7 +17,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 
 from task_platform.bootstrap import build_jobs, build_registry
-from task_platform.domain.enums import ScheduleType
+from task_platform.domain.enums import JobStatus, ScheduleType
 from task_platform.domain.schedule import Schedule
 from task_platform.executor import (
     cancel_before_start,
@@ -136,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             if execution.error_message:
                 print(f"error={execution.error_message}", file=sys.stderr)
-            return 0 if execution.status.value else 1
+            return 0 if execution.status is JobStatus.SUCCESS else 1
 
         if args.command == "cancel":
             execution = cancel_before_start(job)

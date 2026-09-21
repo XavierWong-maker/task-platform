@@ -53,7 +53,7 @@ class RetryPolicy:
         if self.backoff is BackoffStrategy.FIXED:
             delay = self.base_delay_seconds
         else:
-            delay = self.max_delay_seconds * (2 ** (attempt - 1))
+            delay = self.base_delay_seconds * (2 ** (attempt - 1))
         return min(delay, self.max_delay_seconds)
 
     def allows_retry(self, attempt: int) -> bool:

@@ -35,7 +35,7 @@ def build_context(execution_id: str, *, config: Mapping[str, Any] | None = None)
     """
     return JobContext(
         execution_id=execution_id,
-        logger=logging.getLogger(f"task_platform.job{execution_id}"),
+        logger=logging.getLogger(f"task_platform.job.{execution_id}"),
         config=config or {},
     )
 

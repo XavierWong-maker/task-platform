@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 
-from task_platform.domain.enums import BackoffStrategy, JobType
+from task_platform.domain.enums import BackoffStrategy, JobStatus, JobType
 from task_platform.domain.models import Job, RetryPolicy
 from task_platform.executor import execute_attempt
 from task_platform.jobs.decorators import job
@@ -37,7 +37,7 @@ def test_handler_metadata_takes_precedence_over_job_defaults() -> None:
         result = execute_attempt(demo_job, registry, pool, attempt_number=1)
     execution = result.execution
 
-    assert execution.status.value  # SUCCESS，非空字符串即真
+    assert execution.status is JobStatus.SUCCESS
     assert result.should_retry is False
     assert execution.timeout_seconds == 5.0
     assert execution.max_attempts == 7

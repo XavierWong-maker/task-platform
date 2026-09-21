@@ -9,7 +9,7 @@ def test_build_context_creates_named_logger() -> None:
     ctx = build_context("run_abc123")
     assert ctx.execution_id == "run_abc123"
     assert isinstance(ctx.logger, logging.Logger)
-    assert ctx.logger.name == "task_platform.jobrun_abc123"
+    assert ctx.logger.name == "task_platform.job.run_abc123"
     assert ctx.config == {}
 
 
