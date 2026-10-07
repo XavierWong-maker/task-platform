@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import Engine, func, inspect, select
@@ -54,7 +55,12 @@ def _execution(run_id: str = "run_1", attempt: int = 1, job_id: str = "job_1") -
 
 
 def test_tables_are_created(engine: Engine) -> None:
-    assert set(inspect(engine).get_table_names()) == {"jobs", "schedules", "job_executions"}
+    assert set(inspect(engine).get_table_names()) == {
+        "jobs",
+        "schedules",
+        "job_executions",
+        "job_logs",
+    }
 
 
 def test_datetime_roundtrips_as_aware_utc(factory: sessionmaker[Session]) -> None:
@@ -121,3 +127,14 @@ def test_session_scope_rolls_back_on_error(factory: sessionmaker[Session]) -> No
 
     with session_scope(factory) as s:
         assert s.scalar(select(func.count()).select_from(JobRecord)) == 0
+
+
+def test_create_db_engine_creates_parent_directory(tmp_path: Path) -> None:
+    """默认路径 data/task_platform.db 所在目录第一次运行时还不存在，
+    create_db_engine 必须能自动建好，否则 sqlite3 无法建库文件
+    """
+    nested = tmp_path / "nested" / "dir" / "app.db"
+    engine = create_db_engine(f"sqlite:///{nested}")
+    init_db(engine)
+    assert nested.parent.exists()
+    engine.dispose()

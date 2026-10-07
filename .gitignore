@@ -11,6 +11,9 @@ venv/
 
 # Data / DB
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 *.sqlite3
 data/output/
 data/input/

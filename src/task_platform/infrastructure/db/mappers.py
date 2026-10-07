@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-from task_platform.domain.models import Job, JobExecution, RetryPolicy
+from task_platform.domain.models import Job, JobExecution, JobLog, RetryPolicy
 from task_platform.domain.schedule import Schedule
-from task_platform.infrastructure.db.models import ExecutionRecord, JobRecord, ScheduleRecord
+from task_platform.infrastructure.db.models import (
+    ExecutionRecord,
+    JobLogRecord,
+    JobRecord,
+    ScheduleRecord,
+)
 
 # ---------- Job ----------
 
@@ -126,4 +131,24 @@ def record_to_execution(record: ExecutionRecord) -> JobExecution:
         error_message=record.error_message,
         timeout_seconds=record.timeout_seconds,
         max_attempts=record.max_attempts,
+    )
+
+
+def log_to_record(log: JobLog) -> JobLogRecord:
+    return JobLogRecord(
+        run_id=log.run_id,
+        attempt=log.attempt,
+        level=log.level,
+        message=log.message,
+        created_at=log.created_at,
+    )
+
+
+def record_to_log(record: JobLogRecord) -> JobLog:
+    return JobLog(
+        run_id=record.run_id,
+        attempt=record.attempt,
+        level=record.level,
+        message=record.message,
+        created_at=record.created_at,
     )

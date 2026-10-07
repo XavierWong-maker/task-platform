@@ -101,3 +101,14 @@ class JobExecution:
         if self.started_at is None or self.finished_at is None:
             return 0.0
         return (self.finished_at - self.started_at).total_seconds()
+
+
+@dataclass(slots=True)
+class JobLog:
+    """一条运行日志，归属于某次运行的某次尝试(run_id, attempt)"""
+
+    run_id: str
+    attempt: int
+    level: str
+    message: str
+    created_at: datetime = field(default_factory=_now)

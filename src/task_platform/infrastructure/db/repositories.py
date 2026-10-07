@@ -9,32 +9,39 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Generic, TypeVar
+from typing import TypeVar
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from task_platform.domain.enums import JobStatus
-from task_platform.domain.models import Job, JobExecution
+from task_platform.domain.models import Job, JobExecution, JobLog
 from task_platform.domain.schedule import Schedule
 from task_platform.infrastructure.db.mappers import (
     execution_to_record,
     job_to_record,
+    log_to_record,
     record_to_execution,
     record_to_job,
+    record_to_log,
     record_to_schedule,
     schedule_to_record,
     update_execution_record,
     update_job_record,
     update_schedule_record,
 )
-from task_platform.infrastructure.db.models import ExecutionRecord, JobRecord, ScheduleRecord
+from task_platform.infrastructure.db.models import (
+    ExecutionRecord,
+    JobLogRecord,
+    JobRecord,
+    ScheduleRecord,
+)
 
 T = TypeVar("T")
 
 
 @dataclass(slots=True)
-class Page(Generic[T]):
+class Page[T]:
     """一页查询结果; total 是过滤条件下的总数, 不是当前页的行数"""
 
     items: list[T]
@@ -222,4 +229,39 @@ class ExecutionRepository:
         total = self._session.scalar(count_stmt) or 0
         stmt = stmt.offset((page - 1) * page_size).limit(page_size)
         items = [record_to_execution(r) for r in self._session.scalars(stmt)]
+        return Page(items=items, total=total, page=page, page_size=page_size)
+
+
+class JobLogRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add_many(self, logs: list[JobLog]) -> None:
+        """批量写入：对应的 execution 必须已在同一事务内 add 过(复合外键约束)"""
+        self._session.add_all([log_to_record(log) for log in logs])
+        self._session.flush()
+
+    def list_by_run(
+        self,
+        run_id: str,
+        *,
+        attempt: int | None = None,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> Page[JobLog]:
+        _validate_pagination(page, page_size)
+
+        filters = [JobLogRecord.run_id == run_id]
+        if attempt is not None:
+            filters.append(JobLogRecord.attempt == attempt)
+
+        count_stmt = select(func.count()).select_from(JobLogRecord)
+        stmt = select(JobLogRecord).order_by(JobLogRecord.id)
+        for condition in filters:
+            count_stmt = count_stmt.where(condition)
+            stmt = stmt.where(condition)
+
+        total = self._session.scalar(count_stmt) or 0
+        stmt = stmt.offset((page - 1) * page_size).limit(page_size)
+        items = [record_to_log(r) for r in self._session.scalars(stmt)]
         return Page(items=items, total=total, page=page, page_size=page_size)

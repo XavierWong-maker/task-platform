@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import Engine, create_engine, event
@@ -15,13 +16,22 @@ from task_platform.infrastructure.db.base import Base
 DEFAULT_DATABASE_URL = "sqlite:///data/task_platform.db"
 
 
-def get_database_url() -> str:
-    """配置优先级：环境变量 > 默认值（对应蓝图的配置原则）"""
-    return os.environ.get("TASK_PLATFORM_DB_URL", DEFAULT_DATABASE_URL)
+def _ensure_sqlite_parent_dir(url: str) -> None:
+    """file-based sqlite URL 对应的父目录若不存在，sqlite3 无法自动创建——
+    项目骨架里目前没有 data/ 目录，首次真实运行前必须先建好
+    """
+    if not url.startswith("sqlite:///"):
+        return
+    db_path = url.removeprefix("sqlite:///")
+    if not db_path or db_path == ":memory:":
+        return
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
 
 def create_db_engine(url: str | None = None, *, echo: bool = False) -> Engine:
-    engine = create_engine(url or get_database_url(), echo=echo)
+    resolved_url = url or get_database_url()
+    _ensure_sqlite_parent_dir(resolved_url)
+    engine = create_engine(resolved_url, echo=echo)
     if engine.dialect.name == "sqlite":
 
         @event.listens_for(engine, "connect")
@@ -32,6 +42,11 @@ def create_db_engine(url: str | None = None, *, echo: bool = False) -> Engine:
             cursor.close()
 
     return engine
+
+
+def get_database_url() -> str:
+    """配置优先级：环境变量 > 默认值（对应蓝图的配置原则）"""
+    return os.environ.get("TASK_PLATFORM_DB_URL", DEFAULT_DATABASE_URL)
 
 
 def make_session_factory(engine: Engine) -> sessionmaker[Session]:

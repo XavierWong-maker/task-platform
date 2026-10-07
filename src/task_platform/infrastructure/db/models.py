@@ -9,6 +9,7 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -73,3 +74,24 @@ class ExecutionRecord(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     timeout_seconds: Mapped[float | None] = mapped_column(Float)
     max_attempts: Mapped[int | None] = mapped_column(Integer)
+
+
+class JobLogRecord(Base):
+    """运行日志；通过 (run_id, attempt) 复合外键归属到某次尝试，随 execution 级联删除"""
+
+    __tablename__ = "job_logs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["run_id", "attempt"],
+            ["job_executions.run_id", "job_executions.attempt"],
+            ondelete="CASCADE",
+        ),
+        Index("ix_job_logs_run_id_attempt", "run_id", "attempt"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(32))
+    attempt: Mapped[int] = mapped_column(Integer)
+    level: Mapped[str] = mapped_column(String(16))
+    message: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)

@@ -23,6 +23,7 @@ import heapq
 import logging
 import signal
 import time as time_module
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -142,8 +143,18 @@ class Scheduler:
 
         return executions
 
-    def run_forever(self, poll_interval_seconds: float = 1.0) -> None:
+    def run_forever(
+        self,
+        poll_interval_seconds: float = 1.0,
+        *,
+        on_tick: Callable[[list[JobExecution]], None] | None = None,
+    ) -> None:
         """阻塞主循环：每隔 poll_interval_seconds 调用一次 tick()
+
+        on_tick: 每轮 tick() 后被调用，传入本轮触发的 JobExecution 列表。
+        Scheduler 本身不知道、也不关心持久化——这是调用方（CLI/未来的 Service 层）
+        的职责，保持 Scheduler 只负责"什么时候执行"的边界。
+        默认为 None，不影响现有调用方式。
 
         优雅关闭：注册 SIGINT/SIGTERM handler，收到信号后立即停止接收新的tick，
         然后等待线程池中已提交的任务运行完毕再返回（而不是直接丢弃）。
@@ -158,7 +169,9 @@ class Scheduler:
         self._running = True
         try:
             while self._running:
-                self.tick()
+                executions = self.tick()
+                if on_tick is not None:
+                    on_tick(executions)
                 time_module.sleep(poll_interval_seconds)
         finally:
             logger.info("scheduler shutting down, waiting for in-flight jobs to finish")

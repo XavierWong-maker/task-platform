@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "任务调度与数据处理平台"
 requires-python = ">=3.12"
 readme = "README.md"
-dependencies = ["sqlalchemy>=2.0"]
+dependencies = ["sqlalchemy>=2.0", "alembic>=1.13"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -22,3 +22,4 @@ python_version = "3.12"
 mypy_path = "src"
 ignore_missing_imports = true
 disallow_untyped_defs = false
+exclude = ["/migrations/"]

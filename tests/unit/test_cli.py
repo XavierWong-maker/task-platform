@@ -1,4 +1,15 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
 from task_platform.cli.main import main
+
+
+@pytest.fixture(autouse=True)
+def _isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TASK_PLATFORM_DB_URL", f"sqlite:///{tmp_path / 'cli_unit_test.db'}")
 
 
 def test_run_success_returns_zero() -> None:
