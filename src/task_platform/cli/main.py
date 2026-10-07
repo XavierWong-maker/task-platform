@@ -57,8 +57,6 @@ from task_platform.infrastructure.logging.collector import LogCollector, collect
 from task_platform.registry import TaskRegistry
 from task_platform.scheduler import Scheduler
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="task-platform", description="任务调度平台 CLI")
@@ -129,6 +127,8 @@ def _parse_daily(value: str) -> time_cls:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 放在 main() 里而不是模块顶层：仅导入本模块（如测试）不应改动全局日志配置
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     with collecting_logs() as collector:
         return _main(argv, collector)
 

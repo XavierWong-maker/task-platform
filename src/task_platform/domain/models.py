@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from task_platform.domain.enums import BackoffStrategy, JobStatus, JobType
 
 
-def _now() -> datetime:
+def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
@@ -72,7 +72,7 @@ class Job:
     timeout_seconds: float = 30.0
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     enabled: bool = True
-    created_at: datetime = field(default_factory=_now)
+    created_at: datetime = field(default_factory=utc_now)
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -111,4 +111,4 @@ class JobLog:
     attempt: int
     level: str
     message: str
-    created_at: datetime = field(default_factory=_now)
+    created_at: datetime = field(default_factory=utc_now)

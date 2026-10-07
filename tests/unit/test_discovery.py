@@ -45,30 +45,23 @@ def temp_jobs_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         sys.path.remove(str(tmp_path))
 
 
+# 动态生成的 job 文件通过包名从这里取到目标 registry，避免用 global 变量传参
+_REGISTRIES: dict[str, TaskRegistry] = {}
+
+
 def test_discover_finds_newly_added_job_file(temp_jobs_package) -> None:
     tmp_path, package_name, package = temp_jobs_package
     registry = TaskRegistry()
+    _REGISTRIES[package_name] = registry
 
-    job_file = tmp_path / package_name / "brand_new_job.py"
-    job_file.write_text(
+    (tmp_path / package_name / "brand_new_job.py").write_text(
         "from task_platform.jobs.decorators import job\n"
-        "from task_platform.registry import TaskRegistry\n"
-        "import sys\n"
-        f"_registry = sys.modules['{package_name}'].__dict__.setdefault('_test_registry', None)\n",
-        encoding="utf-8",
-    )
-    # 直接把目标 registry 通过模块属性传进去比较绕；改用更直接的写法：
-    job_file.write_text(
-        "from task_platform.jobs.decorators import job\n\n"
-        "from tests.unit.test_discovery import _shared_registry_for_temp_test\n\n"
-        "@job('brand.new.job', registry=_shared_registry_for_temp_test)\n"
+        "from tests.unit.test_discovery import _REGISTRIES\n\n"
+        f"@job('brand.new.job', registry=_REGISTRIES['{package_name}'])\n"
         "def brand_new() -> str:\n"
         "    return 'discovered'\n",
         encoding="utf-8",
     )
-
-    global _shared_registry_for_temp_test
-    _shared_registry_for_temp_test = registry
 
     discovered = discover_jobs(package)
 

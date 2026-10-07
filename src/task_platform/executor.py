@@ -22,8 +22,12 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 
 from task_platform.domain.enums import JobStatus
-from task_platform.domain.models import Job, JobExecution, RetryPolicy
-from task_platform.domain.models import _now as _now  # 复用与 models 一致的时钟来源
+from task_platform.domain.models import (
+    Job,
+    JobExecution,
+    RetryPolicy,
+    utc_now,  # 复用与 models 一致的时钟来源
+)
 from task_platform.domain.state_machine import transition
 from task_platform.jobs.context import build_context, call_handler
 from task_platform.registry import RegisteredHandler, TaskRegistry
@@ -82,7 +86,7 @@ def execute_attempt(
     )
     transition(execution, JobStatus.QUEUED)
     transition(execution, JobStatus.RUNNING)
-    execution.started_at = _now()
+    execution.started_at = utc_now()
     execution.attempt = attempt_number
 
     handler = registry.get(job.handler)
@@ -134,11 +138,11 @@ def execute_attempt(
                     "error": str(exc),
                 },
             )
-        execution.finished_at = _now()
+        execution.finished_at = utc_now()
         return AttemptResult(execution, effective_retry_policy, should_retry)
     else:
         transition(execution, JobStatus.SUCCESS)
-        execution.finished_at = _now()
+        execution.finished_at = utc_now()
         logger.info(
             "job succeeded",
             extra={"job_id": job.id, "run_id": execution.run_id, "attempt": attempt_number},
@@ -154,6 +158,6 @@ def cancel_before_start(job: Job) -> JobExecution:
     """
     execution = JobExecution(job_id=job.id)
     transition(execution, JobStatus.CANCELED)
-    execution.finished_at = _now()
+    execution.finished_at = utc_now()
     logger.info("job canceled", extra={"job_id": job.id, "run_id": execution.run_id})
     return execution

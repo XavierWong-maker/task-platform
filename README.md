@@ -96,6 +96,8 @@ erDiagram
     python -m task_platform.cli.main schedule demo-success --interval 5
     python -m task_platform.cli.main schedule demo-success --daily 01:00
 
+> `--daily HH:MM` 按 **UTC** 计算，不是本地时区（北京时间 09:00 = UTC 01:00）。
+
 启动 Scheduler（加载数据库中所有"任务已启用且调度已启用"的组合；Ctrl+C 优雅退出）：
 
     python -m task_platform.cli.main serve
