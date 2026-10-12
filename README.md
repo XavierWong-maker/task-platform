@@ -122,6 +122,27 @@ erDiagram
     python -m task_platform.cli.main history      # 执行历史还在
     python -m task_platform.cli.main serve        # 再次启动，沿用同一个 Job（id 不变）
 
+## ETL
+
+每日订单 ETL 是注册在平台上的普通任务，可以手动运行或加调度：
+
+    python -m task_platform.cli.main run etl-daily_orders
+    python -m task_platform.cli.main schedule etl-daily_orders --daily 01:00
+
+输出在 `data/output/<run_id>/`：`daily_report.csv`、`quality_report.json`、`quarantine.jsonl`。
+字段与规则见 `docs/data-dictionary.md`。
+
+可选环境变量（环境变量 > 默认值）：`TASK_PLATFORM_ETL_SEED`、`TASK_PLATFORM_ETL_ORDER_COUNT`
+（默认 100000）、`TASK_PLATFORM_ETL_DIRTY_RATIO`（默认 0.03）、`TASK_PLATFORM_ETL_OUTPUT_DIR`。
+
+规模验证：
+
+    python -m task_platform.etl.benchmark --count 1000000 --mode streaming
+    python -m task_platform.etl.benchmark --count 1000000 --mode streaming --memory
+    python -m task_platform.etl.benchmark --count 1000000 --mode materialized --memory
+
+> `--memory` 会让程序明显变慢，耗时和内存请分开测。
+
 ## 如何新增一个任务
 
 只需在 `src/task_platform/jobs/` 下新增一个 Python 文件，用 `@job` 装饰：
@@ -151,26 +172,23 @@ erDiagram
 
 ## 项目状态
 
-当前阶段：**阶段 4 - SQLite + SQLAlchemy 持久化**（已完成）
+当前阶段：**阶段 5 - ETL 与模拟数据**（已完成）
 
-阶段 4 交付：
-- ORM 模型 `jobs` / `schedules` / `job_executions` / `job_logs`，领域对象与 ORM 分离
-- Repository（Job / Schedule / Execution / JobLog），不自行提交，事务边界在 `session_scope`
-- 事务测试：跨 Repository 原子提交/回滚、约束冲突在 flush 时暴露
-- 分页与过滤：`Page[T]`，按启用状态 / job / 状态 / 时间区间
-- CLI 与 Scheduler 接入数据库：`sync_jobs_to_db`、`schedule` / `history` / `logs` 子命令
-- Alembic 迁移（含"迁移结果与 ORM 模型一致"的测试）
-- 设计记录：`docs/adr/0001-persistence-design.md`
+阶段 5 交付：
+- `TestDataFactory`：固定 seed、可注入脏数据、带标签的订单/用户/商品模拟数据
+- 数据质量规则（非空/唯一/范围/枚举/关联/时间）与 `QualityChecker` / `QualityReport`
+- generator 流水线：validate → transform → aggregate，隔离坏数据
+- `etl.daily_orders` 任务：日报、质量报告、quarantine 输出
+- 百万条规模验证脚本；数据字典 `docs/data-dictionary.md`；设计记录 `docs/adr/0002-etl-design.md`
 
-DoD 对照（蓝图 8.5 / 19 节）：
+DoD 对照（蓝图 8.6 / 19 节）：
 
 | 项 | 状态 |
 | --- | --- |
-| 代码：数据库 / Repository | 完成 |
-| 测试：CRUD / 事务测试 | 完成（`test_repositories`、`test_transactions`、`test_pagination`、`test_job_logs`、`test_migrations`） |
-| 文档：ER 图 | 完成（见上文 mermaid）+ ADR |
-| 可运行：重启数据不丢 | 完成（见"重启不丢数据（演示）"） |
-| 数据库约束阻止重复 execution | 完成（`uq_job_executions_run_attempt`，有测试） |
+| 代码：ETL / 质量 | 完成 |
+| 测试：固定数据集测试 | 完成（`test_data_factory`、`test_quality`、`test_pipeline`、`test_daily_orders_etl`、`test_benchmark`） |
+| 文档：数据字典 | 完成（`docs/data-dictionary.md`）+ ADR |
+| 可运行：生成日报 / 质量报告 | 完成（见「ETL（阶段 5）」） |
+| 100 万条处理 | 见 ADR-0002 的规模验证结果 |
 
-下一阶段：阶段 5 - ETL 与模拟数据（`TestDataFactory`、extract → validate → transform →
-aggregate → load 管道、数据质量规则、100 万条 generator 流式处理）。
+下一阶段：阶段 6 - FastAPI（任务 CRUD、手动触发、执行历史 API，Pydantic schema，TestClient 测试）。
