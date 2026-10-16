@@ -10,7 +10,7 @@
 
     conda create -n task-platform python=3.12 -y
     conda activate task-platform
-    pip install pytest ruff mypy pre-commit "sqlalchemy>=2.0" "alembic>=1.13"
+    pip install pytest ruff mypy pre-commit "sqlalchemy>=2.0" "alembic>=1.13" "fastapi>=0.115" "uvicorn>=0.30" httpx2
     git init
     pre-commit install
 
@@ -143,6 +143,45 @@ erDiagram
 
 > `--memory` 会让程序明显变慢，耗时和内存请分开测。
 
+## API
+
+启动服务（启动时自动执行迁移并同步任务定义）：
+
+    uvicorn task_platform.api.app:create_app --factory --reload
+
+交互式文档：`http://127.0.0.1:8000/docs`，OpenAPI：`/openapi.json`。
+数据库同样由 `TASK_PLATFORM_DB_URL` 控制。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | /health | 健康检查（含数据库连通性，不可用时 503） |
+| POST | /api/v1/jobs | 创建任务（handler 必须已注册；重名 409） |
+| GET | /api/v1/jobs | 任务列表，支持 `enabled`、`page`、`page_size` |
+| GET | /api/v1/jobs/{job_id} | 任务详情 |
+| PATCH | /api/v1/jobs/{job_id} | 局部修改（`name`、`timeout_seconds`、`retry_policy`、`enabled`） |
+| DELETE | /api/v1/jobs/{job_id} | 删除任务（级联删除调度与执行记录） |
+| POST | /api/v1/jobs/{job_id}/pause | 暂停调度（幂等） |
+| POST | /api/v1/jobs/{job_id}/resume | 恢复调度（幂等） |
+| POST | /api/v1/jobs/{job_id}/run | 立即运行一次并返回执行记录（同步） |
+| GET | /api/v1/executions | 执行记录，支持 `job_id`、`status`、`started_after`、`started_before`、分页 |
+| GET | /api/v1/executions/{run_id} | 一次运行及其全部尝试 |
+| GET | /api/v1/executions/{run_id}/logs | 运行日志，支持 `attempt`、分页 |
+
+统一错误格式：
+
+    {"error": {"code": "validation_error", "message": "请求参数不合法",
+               "details": [{"field": "query.page", "message": "..."}]}}
+
+时间过滤参数必须带时区（如 `2026-10-01T00:00:00Z`）。
+
+Windows PowerShell 调用示例（`curl` 是 `Invoke-WebRequest` 的别名，传 JSON 建议用 `Invoke-RestMethod`）：
+
+    $body = @{ name = "my-job"; handler = "demo.success" } | ConvertTo-Json
+    Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/jobs -ContentType "application/json" -Body $body
+    Invoke-RestMethod "http://127.0.0.1:8000/api/v1/jobs?page_size=2"
+
+已知限制见 `docs/adr/0003-api-design.md`（手动触发为同步执行；pause/resume 对已运行的 `serve` 进程需重启生效）。
+
 ## 如何新增一个任务
 
 只需在 `src/task_platform/jobs/` 下新增一个 Python 文件，用 `@job` 装饰：
@@ -172,23 +211,23 @@ erDiagram
 
 ## 项目状态
 
-当前阶段：**阶段 5 - ETL 与模拟数据**（已完成）
+当前阶段：**阶段 6 - FastAPI**（已完成）
 
-阶段 5 交付：
-- `TestDataFactory`：固定 seed、可注入脏数据、带标签的订单/用户/商品模拟数据
-- 数据质量规则（非空/唯一/范围/枚举/关联/时间）与 `QualityChecker` / `QualityReport`
-- generator 流水线：validate → transform → aggregate，隔离坏数据
-- `etl.daily_orders` 任务：日报、质量报告、quarantine 输出
-- 百万条规模验证脚本；数据字典 `docs/data-dictionary.md`；设计记录 `docs/adr/0002-etl-design.md`
+阶段 6 交付：
+- 应用工厂 + lifespan、依赖注入的会话/注册表/线程池/日志收集器
+- 任务 CRUD、pause/resume、手动触发、执行记录与日志查询（分页、过滤）
+- Pydantic v2 请求/响应模型、统一错误格式、自动生成的 OpenAPI 文档
+- TestClient 集成测试，包含 API 与 CLI 的一致性对照测试
+- 设计记录 `docs/adr/0003-api-design.md`
 
-DoD 对照（蓝图 8.6 / 19 节）：
+DoD 对照（蓝图 8.7 / 19 节）：
 
 | 项 | 状态 |
 | --- | --- |
-| 代码：ETL / 质量 | 完成 |
-| 测试：固定数据集测试 | 完成（`test_data_factory`、`test_quality`、`test_pipeline`、`test_daily_orders_etl`、`test_benchmark`） |
-| 文档：数据字典 | 完成（`docs/data-dictionary.md`）+ ADR |
-| 可运行：生成日报 / 质量报告 | 完成（见「ETL（阶段 5）」） |
-| 100 万条处理 | 见 ADR-0002 的规模验证结果 |
+| 代码：FastAPI 路由 / schema | 完成 |
+| 测试：API 集成测试 | 完成（`test_api_health`、`test_api_jobs`、`test_api_jobs_write`、`test_api_run`、`test_api_run_detail`） |
+| 文档：OpenAPI | 完成（`/docs`、`/openapi.json`）+ ADR-0003 |
+| 可运行：浏览器 / CLI 可调用 | 完成（见「API」） |
+| API 与 CLI 结果一致 | 完成（`test_cli_and_api_runs_produce_same_business_result`） |
 
-下一阶段：阶段 6 - FastAPI（任务 CRUD、手动触发、执行历史 API，Pydantic schema，TestClient 测试）。
+下一阶段：阶段 7 - 可靠性与并发控制（幂等键、锁、主动取消、重启恢复、故障注入）。
