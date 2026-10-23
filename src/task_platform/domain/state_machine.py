@@ -31,10 +31,16 @@ _ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.PENDING: frozenset({JobStatus.QUEUED, JobStatus.CANCELED}),
     JobStatus.QUEUED: frozenset({JobStatus.RUNNING, JobStatus.CANCELED}),
     JobStatus.RUNNING: frozenset(
-        {JobStatus.SUCCESS, JobStatus.RETRYING, JobStatus.FAILED, JobStatus.CANCELED}
+        {
+            JobStatus.SUCCESS,
+            JobStatus.RETRYING,
+            JobStatus.FAILED,
+            JobStatus.CANCELED,
+            JobStatus.RECOVERABLE,
+        }
     ),
-    JobStatus.RETRYING: frozenset({JobStatus.QUEUED}),
-    # 终止状态：不允许再转换到任何状态
+    JobStatus.RETRYING: frozenset({JobStatus.QUEUED, JobStatus.RECOVERABLE}),
+    JobStatus.RECOVERABLE: frozenset({JobStatus.QUEUED, JobStatus.FAILED, JobStatus.CANCELED}),
     JobStatus.SUCCESS: frozenset(),
     JobStatus.FAILED: frozenset(),
     JobStatus.CANCELED: frozenset(),

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 
+from task_platform.jobs.context import JobContext
 from task_platform.jobs.decorators import job
 
 
@@ -28,3 +29,17 @@ def demo_slow(seconds: float = 2.0) -> str:
     """耗时任务，用于后续验证 timeout 行为"""
     time.sleep(seconds)
     return f"slept {seconds}s"
+
+
+@job(
+    "demo.cancellable",
+    description="可取消的长任务（协作式取消演示）",
+    timeout_seconds=120.0,
+    max_attempts=1,
+)
+def demo_cancellable(ctx: JobContext, seconds: float = 60.0) -> str:
+    """每 0.1 秒检查一次取消令牌；被取消时抛 JobCanceledError"""
+    for _ in range(int(seconds * 10)):
+        ctx.check_cancelled()
+        ctx.cancel.wait(0.1)
+    return f"ran {seconds}s"

@@ -30,12 +30,16 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from types import FrameType
 
-from task_platform.domain.models import Job, JobExecution, utc_now
+from task_platform.domain.cancel import ActiveRuns, CancelToken
+from task_platform.domain.idempotency import scheduled_key
+from task_platform.domain.models import Job, JobExecution, new_run_id, utc_now
 from task_platform.domain.schedule import Schedule, compute_next_run
 from task_platform.executor import execute_attempt
 from task_platform.registry import TaskRegistry
 
 logger = logging.getLogger("task_platform.scheduler")
+ClaimFn = Callable[[Job, str, str], bool]
+StartFn = Callable[[JobExecution], None]
 
 
 @dataclass(order=True)
@@ -57,8 +61,19 @@ class _HeapEntry:
 class Scheduler:
     """维护一组 (Job, Schedule)，按到期时间触发执行；失败任务按重试策略自动重新排期"""
 
-    def __init__(self, registry: TaskRegistry, *, max_workers: int = 4) -> None:
+    def __init__(
+        self,
+        registry: TaskRegistry,
+        *,
+        max_workers: int = 4,
+        claim: ClaimFn | None = None,
+        on_start: StartFn | None = None,
+        active_runs: ActiveRuns | None = None,
+    ) -> None:
         self._registry = registry
+        self._claim = claim
+        self._on_start = on_start
+        self.active_runs = active_runs if active_runs is not None else ActiveRuns()
         self._heap: list[_HeapEntry] = []
         self._seq = itertools.count()
         self._running = False
@@ -121,6 +136,33 @@ class Scheduler:
                 self._push(compute_next_run(entry.schedule, now), entry.schedule, entry.job)
                 continue
 
+            run_id = entry.run_id
+            if entry.attempt_number == 1 and self._claim is not None:
+                candidate_run_id = new_run_id()
+                key = scheduled_key(entry.job.id, entry.schedule, entry.next_run_at)
+                try:
+                    claimed = self._claim(entry.job, candidate_run_id, key)
+                except Exception:
+                    logger.exception(
+                        "idempotency claim failed, skipping this trigger",
+                        extra={"job_id": entry.job.id, "idempotency_key": key},
+                    )
+                    self._push(compute_next_run(entry.schedule, now), entry.schedule, entry.job)
+                    continue
+                if not claimed:
+                    logger.info(
+                        "skip duplicate trigger (idempotency key already claimed)",
+                        extra={"job_id": entry.job.id, "idempotency_key": key},
+                    )
+                    self._push(compute_next_run(entry.schedule, now), entry.schedule, entry.job)
+                    continue
+                run_id = candidate_run_id
+
+            if run_id is None:
+                run_id = new_run_id()
+            token = CancelToken()
+            self.active_runs.register(run_id, token)
+
             is_retry_entry = entry.attempt_number > 1
             logger.info(
                 "job triggered",
@@ -137,7 +179,9 @@ class Scheduler:
                     self._registry,
                     self._pool,
                     attempt_number=entry.attempt_number,
-                    run_id=entry.run_id,
+                    run_id=run_id,
+                    on_started=self._on_start,
+                    cancel_token=token,
                 )
             except Exception:
                 # 单个任务在"开始执行前"就出错（典型：数据库里有、代码里已删除的孤儿 handler），
@@ -148,6 +192,8 @@ class Scheduler:
                 )
                 self._push(compute_next_run(entry.schedule, now), entry.schedule, entry.job)
                 continue
+            finally:
+                self.active_runs.unregister(run_id)
             executions.append(result.execution)
 
             if result.should_retry:

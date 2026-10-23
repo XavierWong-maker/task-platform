@@ -61,3 +61,17 @@ def test_pending_cannot_skip_to_running() -> None:
     ex = JobExecution(job_id="job_1")
     with pytest.raises(InvalidStateTransitionError):
         transition(ex, JobStatus.RUNNING)
+
+
+def test_running_can_become_recoverable_and_then_resume_or_end() -> None:
+    assert can_transition(JobStatus.RUNNING, JobStatus.RECOVERABLE) is True
+    assert can_transition(JobStatus.RECOVERABLE, JobStatus.QUEUED) is True
+    assert can_transition(JobStatus.RECOVERABLE, JobStatus.FAILED) is True
+    assert can_transition(JobStatus.RECOVERABLE, JobStatus.CANCELED) is True
+    assert can_transition(JobStatus.RECOVERABLE, JobStatus.SUCCESS) is False
+    assert can_transition(JobStatus.PENDING, JobStatus.RECOVERABLE) is False
+
+
+def test_retrying_can_become_recoverable_but_not_succeed_directly() -> None:
+    assert can_transition(JobStatus.RETRYING, JobStatus.RECOVERABLE) is True
+    assert can_transition(JobStatus.RETRYING, JobStatus.SUCCESS) is False

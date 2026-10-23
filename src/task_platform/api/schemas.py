@@ -117,6 +117,7 @@ class ExecutionResponse(BaseModel):
     error_message: str | None
     timeout_seconds: float | None
     max_attempts: int | None
+    cancel_requested: bool
 
 
 class RunDetailResponse(BaseModel):
@@ -136,3 +137,8 @@ class JobLogResponse(BaseModel):
     level: str
     message: str
     created_at: datetime
+
+
+class CancelResponse(BaseModel):
+    run_id: str
+    outcome: str

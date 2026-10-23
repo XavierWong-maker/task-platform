@@ -115,6 +115,23 @@ erDiagram
     python -m task_platform.cli.main logs <run_id>
     python -m task_platform.cli.main logs <run_id> --attempt 2
 
+### 可靠性（阶段 7）
+
+    python -m task_platform.cli.main recover               # 崩溃恢复（见下方前提）
+    python -m task_platform.cli.main resume <run_id>       # 重新运行一个 RECOVERABLE 的运行
+    python -m task_platform.cli.main cancel-run <run_id>   # 请求取消一次运行
+
+> `recover` 只应在**确认没有 serve 在运行**时执行：它会把残留的 RUNNING 和悬空的 RETRYING
+> 标为 RECOVERABLE，并释放"已认领但从未开始执行"的孤儿幂等键。
+>
+> 取消是协作式的：RUNNING 的运行由 serve 里的 watcher 在 0.5 秒内转成取消信号，
+> 任务需要在循环中调用 `ctx.check_cancelled()` 才能真正停下；不配合的任务在宽限期（默认 5 秒）
+> 后被放弃等待并记为 CANCELED（线程可能仍在后台运行）。
+
+故障注入任务（用于演示和测试）：`fault-flaky`（每次运行前 N 次失败）、`fault-slow`（可取消的延迟）、
+`fault-hang`（不响应取消）、`fault-ledger`（非幂等的台账写入）。
+API：`POST /api/v1/executions/{run_id}/cancel`。
+
 ### 重启不丢数据（演示）
 
     python -m task_platform.cli.main schedule demo-success --interval 3
@@ -211,23 +228,23 @@ Windows PowerShell 调用示例（`curl` 是 `Invoke-WebRequest` 的别名，传
 
 ## 项目状态
 
-当前阶段：**阶段 6 - FastAPI**（已完成）
+当前阶段：**阶段 7 - 可靠性与并发控制**（已完成）
 
-阶段 6 交付：
-- 应用工厂 + lifespan、依赖注入的会话/注册表/线程池/日志收集器
-- 任务 CRUD、pause/resume、手动触发、执行记录与日志查询（分页、过滤）
-- Pydantic v2 请求/响应模型、统一错误格式、自动生成的 OpenAPI 文档
-- TestClient 集成测试，包含 API 与 CLI 的一致性对照测试
-- 设计记录 `docs/adr/0003-api-design.md`
+阶段 7 交付：
+- 幂等键：`idempotency_keys` 表 + 原子认领；Scheduler 按"计划触发时刻"推导键，多实例同槽位只执行一次
+- execution 进入 RUNNING 即落库；`recover` / `resume` 处理 RUNNING、悬空 RETRYING、孤儿幂等键
+- 协作式取消（`CancelToken` / `ctx.check_cancelled()`）、宽限期、超时触发令牌；
+  跨进程取消（`cancel_requested` 列 + watcher）；CLI `cancel-run` 与 API `/cancel`
+- 故障注入任务与竞态复现测试（无幂等键重复 N 次 / 有幂等键只执行 1 次）
+- 设计记录 `docs/adr/0004-reliability-design.md`（含恢复策略一览与已知限制）
 
-DoD 对照（蓝图 8.7 / 19 节）：
+DoD 对照（蓝图 8.8 / 19 节）：
 
 | 项 | 状态 |
 | --- | --- |
-| 代码：FastAPI 路由 / schema | 完成 |
-| 测试：API 集成测试 | 完成（`test_api_health`、`test_api_jobs`、`test_api_jobs_write`、`test_api_run`、`test_api_run_detail`） |
-| 文档：OpenAPI | 完成（`/docs`、`/openapi.json`）+ ADR-0003 |
-| 可运行：浏览器 / CLI 可调用 | 完成（见「API」） |
-| API 与 CLI 结果一致 | 完成（`test_cli_and_api_runs_produce_same_business_result`） |
+| 代码：幂等 / 取消 / 恢复 / 故障注入 | 完成 |
+| 测试：故障注入、竞态复现与控制 | 完成（`test_race_conditions`、`test_recovery`、`test_cancellation`、`test_executor_cancel`、`test_faults`） |
+| 文档：恢复策略 | 完成（ADR-0004） |
+| 可运行：故障可恢复 | 完成（见「可靠性」） |
 
-下一阶段：阶段 7 - 可靠性与并发控制（幂等键、锁、主动取消、重启恢复、故障注入）。
+下一阶段：阶段 8 - Redis + Worker 解耦（队列、ack、重复消费、多 Worker）。

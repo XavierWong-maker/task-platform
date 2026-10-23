@@ -9,11 +9,13 @@ from sqlalchemy.orm import Session
 from task_platform.api.deps import get_session
 from task_platform.api.errors import ApiError
 from task_platform.api.schemas import (
+    CancelResponse,
     ExecutionResponse,
     JobLogResponse,
     PageResponse,
     RunDetailResponse,
 )
+from task_platform.cancellation import CancelOutcome, request_cancel
 from task_platform.domain.enums import JobStatus
 from task_platform.infrastructure.db.repositories import ExecutionRepository, JobLogRepository
 
@@ -91,3 +93,17 @@ def get_run_logs(
         page_size=result.page_size,
         total_pages=result.total_pages,
     )
+
+
+@router.post("/{run_id}/cancel", response_model=CancelResponse)
+def cancel_run(run_id: str, session: Annotated[Session, Depends(get_session)]) -> CancelResponse:
+    """请求取消。RUNNING 的运行由执行它的 serve 进程协作式停止；
+    通过 API 同步触发的运行在请求返回前已结束，无法取消。"""
+    outcome = request_cancel(session, run_id)
+    if outcome is CancelOutcome.NOT_FOUND:
+        raise _run_not_found(run_id)
+    if outcome is CancelOutcome.ALREADY_FINISHED:
+        raise ApiError(409, "run_already_finished", f"运行已结束: {run_id}")
+    if outcome is CancelOutcome.NOT_CANCELLABLE:
+        raise ApiError(409, "run_not_cancellable", f"当前状态不可取消: {run_id}")
+    return CancelResponse(run_id=run_id, outcome=outcome.value)

@@ -14,7 +14,7 @@ from task_platform.infrastructure.db.base import Base
 from task_platform.infrastructure.db.migrate import downgrade_db, upgrade_db
 from task_platform.infrastructure.db.session import create_db_engine
 
-APP_TABLES = {"jobs", "schedules", "job_executions", "job_logs"}
+APP_TABLES = {"jobs", "schedules", "job_executions", "job_logs", "idempotency_keys"}
 
 
 @pytest.fixture

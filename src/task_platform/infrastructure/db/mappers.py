@@ -107,6 +107,7 @@ def execution_to_record(execution: JobExecution) -> ExecutionRecord:
         error_message=execution.error_message,
         timeout_seconds=execution.timeout_seconds,
         max_attempts=execution.max_attempts,
+        cancel_requested=execution.cancel_requested,
     )
 
 
@@ -131,6 +132,7 @@ def record_to_execution(record: ExecutionRecord) -> JobExecution:
         error_message=record.error_message,
         timeout_seconds=record.timeout_seconds,
         max_attempts=record.max_attempts,
+        cancel_requested=record.cancel_requested,
     )
 
 

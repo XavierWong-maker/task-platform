@@ -7,15 +7,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TypeVar
+from typing import Any, TypeVar, cast
 
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import CursorResult, delete, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.orm import Session, aliased
 
 from task_platform.domain.enums import JobStatus
-from task_platform.domain.models import Job, JobExecution, JobLog
+from task_platform.domain.models import Job, JobExecution, JobLog, utc_now
 from task_platform.domain.schedule import Schedule
 from task_platform.infrastructure.db.mappers import (
     execution_to_record,
@@ -32,6 +35,7 @@ from task_platform.infrastructure.db.mappers import (
 )
 from task_platform.infrastructure.db.models import (
     ExecutionRecord,
+    IdempotencyRecord,
     JobLogRecord,
     JobRecord,
     ScheduleRecord,
@@ -190,6 +194,59 @@ class ExecutionRepository:
         update_execution_record(record, execution)
         self._session.flush()
 
+    def upsert(self, execution: JobExecution) -> None:
+        """已存在 (run_id, attempt) 则更新，否则插入：提前落库后，结束时走更新分支"""
+        if self._find(execution.run_id, execution.attempt) is None:
+            self.add(execution)
+        else:
+            self.update(execution)
+
+    def list_by_status(self, status: JobStatus) -> list[JobExecution]:
+        stmt = (
+            select(ExecutionRecord)
+            .where(ExecutionRecord.status == status)
+            .order_by(ExecutionRecord.id)
+        )
+        return [record_to_execution(r) for r in self._session.scalars(stmt)]
+
+    def list_dangling_retries(self) -> list[JobExecution]:
+        """状态为 RETRYING 且同一 run 没有更高 attempt 的记录：重试链在内存排期丢失后留下的残骸"""
+        later = aliased(ExecutionRecord)
+        superseded = (
+            select(later.id)
+            .where(later.run_id == ExecutionRecord.run_id, later.attempt > ExecutionRecord.attempt)
+            .exists()
+        )
+        stmt = (
+            select(ExecutionRecord)
+            .where(ExecutionRecord.status == JobStatus.RETRYING, ~superseded)
+            .order_by(ExecutionRecord.id)
+        )
+        return [record_to_execution(r) for r in self._session.scalars(stmt)]
+
+    def mark_cancel_requested(self, run_id: str, attempt: int) -> bool:
+        record = self._find(run_id, attempt)
+        if record is None:
+            return False
+        record.cancel_requested = True
+        self._session.flush()
+        return True
+
+    def list_cancel_requested(self, run_ids: Collection[str]) -> list[str]:
+        """给定 run_id 中：当前状态 RUNNING 且被请求取消"""
+        if not run_ids:
+            return []
+        stmt = (
+            select(ExecutionRecord.run_id)
+            .where(
+                ExecutionRecord.run_id.in_(list(run_ids)),
+                ExecutionRecord.status == JobStatus.RUNNING,
+                ExecutionRecord.cancel_requested.is_(True),
+            )
+            .distinct()
+        )
+        return list(self._session.scalars(stmt))
+
     def _find(self, run_id: str, attempt: int) -> ExecutionRecord | None:
         stmt = select(ExecutionRecord).where(
             ExecutionRecord.run_id == run_id,
@@ -265,3 +322,43 @@ class JobLogRepository:
         stmt = stmt.offset((page - 1) * page_size).limit(page_size)
         items = [record_to_log(r) for r in self._session.scalars(stmt)]
         return Page(items=items, total=total, page=page, page_size=page_size)
+
+
+class IdempotencyRepository:
+    """幂等键认领。原子性来自数据库主键冲突，而不是"先查再写"。"""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def try_claim(self, key: str, job_id: str, run_id: str) -> bool:
+        """认领成功返回 True；键已被占用返回 False（不抛异常）"""
+        dialect_insert = (
+            pg_insert if self._session.get_bind().dialect.name == "postgresql" else sqlite_insert
+        )
+
+        stmt = (
+            dialect_insert(IdempotencyRecord)
+            .values(key=key, job_id=job_id, run_id=run_id, created_at=utc_now())
+            .on_conflict_do_nothing(index_elements=["key"])
+        )
+        result = cast("CursorResult[Any]", self._session.execute(stmt))
+        return result.rowcount == 1
+
+    def get_run_id(self, key: str) -> str | None:
+        return self._session.scalar(
+            select(IdempotencyRecord.run_id).where(IdempotencyRecord.key == key)
+        )
+
+    def release(self, key: str) -> bool:
+        """释放键（例如运行最终失败、允许人工重跑）；返回是否真的删除了一行"""
+        result = cast(
+            "CursorResult[Any]",
+            self._session.execute(delete(IdempotencyRecord).where(IdempotencyRecord.key == key)),
+        )
+        return result.rowcount == 1
+
+    def list_orphan_keys(self) -> list[str]:
+        """已认领、但数据库里没有任何对应 run_id 的 execution：崩溃发生在认领与开始执行之间"""
+        known_runs = select(ExecutionRecord.run_id)
+        stmt = select(IdempotencyRecord.key).where(IdempotencyRecord.run_id.not_in(known_runs))
+        return list(self._session.scalars(stmt))

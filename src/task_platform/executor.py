@@ -17,10 +17,13 @@ execute_attempt() 是当前唯一的执行入口：
 from __future__ import annotations
 
 import logging
-from concurrent.futures import Executor
-from concurrent.futures import TimeoutError as FutureTimeoutError
+import time
+from collections.abc import Callable
+from concurrent.futures import Executor, Future, wait
 from dataclasses import dataclass
+from typing import Any
 
+from task_platform.domain.cancel import CancelToken, JobCanceledError
 from task_platform.domain.enums import JobStatus
 from task_platform.domain.models import (
     Job,
@@ -33,6 +36,30 @@ from task_platform.jobs.context import build_context, call_handler
 from task_platform.registry import RegisteredHandler, TaskRegistry
 
 logger = logging.getLogger("task_platform.executor")
+_POLL_SECONDS = 0.1
+
+
+def _wait_for(future: Future[Any], token: CancelToken, *, timeout: float, grace: float) -> None:
+    """等 future 结束，三种结局：完成 / 超时 / 取消后宽限期用尽。
+    用 wait() 而不是 future.result(timeout)：后者的超时异常与 handler 自己抛出的
+    TimeoutError 是同一个类，无法区分。
+    """
+    deadline = time.monotonic() + timeout
+    cancel_deadline: float | None = None
+    while True:
+        done, _ = wait([future], timeout=min(_POLL_SECONDS, max(deadline - time.monotonic(), 0)))
+        if done:
+            future.result()  # 重新抛出 handler 的异常（含 JobCanceledError）
+            return
+        now = time.monotonic()
+        if now >= deadline:
+            token.cancel()  # 让配合的 handler 也能停下来
+            raise TimeoutError(f"job 执行超过 {timeout}s 仍未完成（线程仍可能在后台继续运行）")
+        if token.is_cancelled:
+            if cancel_deadline is None:
+                cancel_deadline = now + grace
+            elif now >= cancel_deadline:
+                raise JobCanceledError("canceled: handler did not stop within grace period")
 
 
 def resolve_timeout_seconds(job: Job, handler: RegisteredHandler) -> float:
@@ -67,6 +94,9 @@ def execute_attempt(
     *,
     attempt_number: int,
     run_id: str | None = None,
+    on_started: Callable[[JobExecution], None] | None = None,
+    cancel_token: CancelToken | None = None,
+    cancel_grace_seconds: float = 5.0,
 ) -> AttemptResult:
     """执行一次尝试
 
@@ -75,12 +105,16 @@ def execute_attempt(
         registry: 用于解析 handler
         pool: 用于提交 handler 调用、施加 timeout 的线程池
         attempt_number: 这是第几次尝试（从 1 开始）
-        run_id: 若是重试（attempt_number > 1），传入上一次尝试的 run_id 以延续同一次运行；
-            首次尝试传 None，由 JobExecution 自动生成新的 run_id
+        run_id: 重试/恢复时传入已有 run_id 以延续同一次运行；首次尝试传 None
+        on_started: 进入 RUNNING 后、调用 handler 前触发，用于调用方提前持久化
+        cancel_token: 取消令牌；handler 通过 ctx.check_cancelled() 感知。
+            为 None 时内部新建一个（此时没人能从外部取消）
+        cancel_grace_seconds: 令牌被取消后，等待 handler 自行停止的宽限期
 
     Returns:
         AttemptResult：包含本次 execution、生效的 retry_policy，以及是否还应该重试
     """
+    token = cancel_token or CancelToken()
     execution = (
         JobExecution(job_id=job.id, run_id=run_id) if run_id else JobExecution(job_id=job.id)
     )
@@ -95,8 +129,11 @@ def execute_attempt(
     execution.timeout_seconds = effective_timeout
     execution.max_attempts = effective_retry_policy.max_attempts
 
+    if on_started is not None:
+        on_started(execution)
+
     try:
-        context = build_context(execution.run_id)
+        context = build_context(execution.run_id, cancel=token)
         logger.info(
             "job attempt started",
             extra={
@@ -107,12 +144,16 @@ def execute_attempt(
             },
         )
         future = pool.submit(call_handler, handler.func, context)
-        try:
-            future.result(timeout=effective_timeout)
-        except FutureTimeoutError:
-            raise TimeoutError(
-                f"job 执行超过 {effective_timeout}s 仍未完成（线程仍可能在后台继续运行）"
-            ) from None
+        _wait_for(future, token, timeout=effective_timeout, grace=cancel_grace_seconds)
+    except JobCanceledError as exc:
+        execution.error_message = str(exc)
+        transition(execution, JobStatus.CANCELED)
+        execution.finished_at = utc_now()
+        logger.warning(
+            "job attempt canceled",
+            extra={"job_id": job.id, "run_id": execution.run_id, "attempt": attempt_number},
+        )
+        return AttemptResult(execution, effective_retry_policy, should_retry=False)
     except Exception as exc:  # noqa: BLE001 - 任务处理函数的异常类型不可预知，需要全部捕获
         execution.error_message = str(exc)
         should_retry = effective_retry_policy.allows_retry(attempt_number)

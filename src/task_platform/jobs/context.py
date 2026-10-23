@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from task_platform.domain.cancel import CancelToken
 from task_platform.registry import Handler
 
 
@@ -25,18 +26,28 @@ class JobContext:
     execution_id: str
     logger: logging.Logger
     config: Mapping[str, Any] = field(default_factory=dict)
+    cancel: CancelToken = field(default_factory=CancelToken)
+
+    def check_cancelled(self) -> None:
+        """在安全点调用：已被请求取消则抛 JobCanceledError"""
+        self.cancel.check()
 
 
-def build_context(execution_id: str, *, config: Mapping[str, Any] | None = None) -> JobContext:
+def build_context(
+    execution_id: str,
+    *,
+    config: Mapping[str, Any] | None = None,
+    cancel: CancelToken | None = None,
+) -> JobContext:
     """构建一个 JobContext
 
     logger 命名为 task_platform.job.<execution_id>，方便按 run_id 串联日志
-    （对照设计蓝图：日志字段需包含 job_id/run_id，这里先从 logger 命名维度打基础）
     """
     return JobContext(
         execution_id=execution_id,
         logger=logging.getLogger(f"task_platform.job.{execution_id}"),
         config=config or {},
+        cancel=cancel or CancelToken(),
     )
 
 

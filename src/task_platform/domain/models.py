@@ -20,6 +20,10 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
+def new_run_id() -> str:
+    return _new_id("run")
+
+
 @dataclass(frozen=True, slots=True)
 class RetryPolicy:
     """描述失败重试规则
@@ -94,6 +98,7 @@ class JobExecution:
     error_message: str | None = None
     timeout_seconds: float | None = None
     max_attempts: int | None = None
+    cancel_requested: bool = False  # 数据库持有：由 request_cancel 写入，执行结束的回写不覆盖
 
     @property
     def duration_seconds(self) -> float:

@@ -28,6 +28,7 @@ class JobStatus(StrEnum):
     RETRYING = "RETRYING"
     FAILED = "FAILED"
     CANCELED = "CANCELED"
+    RECOVERABLE = "RECOVERABLE"  # 进程中断时仍为 RUNNING，等待人工/后续步骤处理
 
     def is_terminal(self) -> bool:
         """是否为终止状态"""

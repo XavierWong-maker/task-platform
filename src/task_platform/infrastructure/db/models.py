@@ -74,6 +74,7 @@ class ExecutionRecord(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     timeout_seconds: Mapped[float | None] = mapped_column(Float)
     max_attempts: Mapped[int | None] = mapped_column(Integer)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class JobLogRecord(Base):
@@ -94,4 +95,15 @@ class JobLogRecord(Base):
     attempt: Mapped[int] = mapped_column(Integer)
     level: Mapped[str] = mapped_column(String(16))
     message: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class IdempotencyRecord(Base):
+    """幂等键认领记录：key 唯一，记录是哪次 run 认领了它"""
+
+    __tablename__ = "idempotency_keys"
+
+    key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+    run_id: Mapped[str] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)

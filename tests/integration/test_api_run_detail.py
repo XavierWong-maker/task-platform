@@ -133,3 +133,12 @@ def test_cli_and_api_runs_produce_same_business_result(
         cli_summary = _summarize(cli_view)
 
     assert api_summary == cli_summary
+
+
+def test_cancel_endpoint_outcomes(client: TestClient) -> None:
+    assert client.post("/api/v1/executions/run_nope/cancel").status_code == 404
+
+    run_id = _seed_two_attempts(client)  # 最后一次尝试已 SUCCESS
+    resp = client.post(f"/api/v1/executions/{run_id}/cancel")
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "run_already_finished"

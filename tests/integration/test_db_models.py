@@ -60,6 +60,7 @@ def test_tables_are_created(engine: Engine) -> None:
         "schedules",
         "job_executions",
         "job_logs",
+        "idempotency_keys",
     }
 
 

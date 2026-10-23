@@ -32,6 +32,7 @@ from datetime import time as time_cls
 from sqlalchemy.orm import Session, sessionmaker
 
 from task_platform.bootstrap import build_registry, load_active_schedules, sync_jobs_to_db
+from task_platform.cancellation import CancelOutcome, CancelWatcher, request_cancel
 from task_platform.domain.enums import JobStatus, ScheduleType
 from task_platform.domain.models import Job, JobExecution
 from task_platform.domain.schedule import Schedule
@@ -44,6 +45,7 @@ from task_platform.executor import (
 from task_platform.infrastructure.db.migrate import upgrade_db
 from task_platform.infrastructure.db.repositories import (
     ExecutionRepository,
+    IdempotencyRepository,
     JobLogRepository,
     ScheduleRepository,
 )
@@ -54,6 +56,7 @@ from task_platform.infrastructure.db.session import (
     session_scope,
 )
 from task_platform.infrastructure.logging.collector import LogCollector, collecting_logs
+from task_platform.recovery import recover_interrupted
 from task_platform.registry import TaskRegistry
 from task_platform.scheduler import Scheduler
 
@@ -91,6 +94,18 @@ def _build_parser() -> argparse.ArgumentParser:
     schedule_group.add_argument("--interval", type=float, help="固定间隔秒数")
     schedule_group.add_argument("--daily", type=str, help="每天固定时刻，格式 HH:MM")
 
+    subparsers.add_parser(
+        "recover", help="崩溃恢复：把残留的 RUNNING 标为 RECOVERABLE（需确认没有 serve 在运行）"
+    )
+
+    cancel_run_parser = subparsers.add_parser(
+        "cancel-run", help="请求取消某次运行（RUNNING 协作式取消；RECOVERABLE 直接取消）"
+    )
+    cancel_run_parser.add_argument("run_id")
+
+    resume_parser = subparsers.add_parser("resume", help="重新运行一个 RECOVERABLE 的运行")
+    resume_parser.add_argument("run_id")
+
     serve_parser = subparsers.add_parser(
         "serve", help="启动 Scheduler 主循环（阻塞运行，Ctrl+C 优雅退出）"
     )
@@ -116,7 +131,7 @@ def _persist_execution(
     """同一事务内先写 execution, 再写它的日志"""
     logs = collector.drain(execution.run_id, attempt=execution.attempt)
     with session_scope(factory) as s:
-        ExecutionRepository(s).add(execution)
+        ExecutionRepository(s).upsert(execution)
         if logs:
             JobLogRepository(s).add_many(logs)
 
@@ -191,6 +206,52 @@ def _main(argv: list[str] | None, collector: LogCollector) -> int:
             )
         return 0
 
+    if args.command == "recover":
+        with session_scope(factory) as s:
+            report = recover_interrupted(s)
+        print(
+            f"recovered={len(report.recovered)} "
+            f"recovered_retries={len(report.recovered_retries)} "
+            f"released_keys={len(report.released_keys)}"
+        )
+        for item in report.recovered:
+            print(f"  RECOVERABLE (was RUNNING) {item}")
+        for item in report.recovered_retries:
+            print(f"  RECOVERABLE (was RETRYING) {item}")
+        for key in report.released_keys:
+            print(f"  released {key}")
+        return 0
+
+    if args.command == "cancel-run":
+        with session_scope(factory) as s:
+            outcome = request_cancel(s, args.run_id)
+        print(f"run_id={args.run_id} outcome={outcome.value}")
+        ok = outcome in (CancelOutcome.REQUESTED, CancelOutcome.CANCELED)
+        return 0 if ok else 1
+
+    if args.command == "resume":
+        with session_scope(factory) as s:
+            attempts = ExecutionRepository(s).list_by_run(args.run_id)
+        if not attempts:
+            print(f"未找到运行：{args.run_id}", file=sys.stderr)
+            return 1
+        last = attempts[-1]
+        if last.status is not JobStatus.RECOVERABLE:
+            print(f"只能恢复 RECOVERABLE 的运行，当前为 {last.status.value}", file=sys.stderr)
+            return 1
+        target = next((j for j in jobs.values() if j.id == last.job_id), None)
+        if target is None:
+            print(f"运行所属任务已不存在：{last.job_id}", file=sys.stderr)
+            return 1
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="cli-resume") as pool:
+            result = execute_attempt(
+                target, registry, pool, attempt_number=last.attempt + 1, run_id=args.run_id
+            )
+        _persist_execution(factory, result.execution, collector)
+        ex = result.execution
+        print(f"run_id={ex.run_id} status={ex.status.value} attempt={ex.attempt}")
+        return 0 if ex.status is JobStatus.SUCCESS else 1
+
     if args.command == "schedule":
         job = jobs.get(args.name)
         if job is None:
@@ -228,16 +289,30 @@ def _main(argv: list[str] | None, collector: LogCollector) -> int:
             )
             return 1
 
-        scheduler = Scheduler(registry)
-        for job, sched in pairs:
-            scheduler.add(job, sched)
+        def _claim(_job: Job, run_id: str, _key: str) -> bool:
+            with session_scope(factory) as se:
+                return IdempotencyRepository(se).try_claim(_key, _job.id, run_id)
+
+        def _on_start(_execution: JobExecution) -> None:
+            # 进入 RUNNING 就落库：崩溃后库里仍有这次尝试的痕迹
+            with session_scope(factory) as se:
+                ExecutionRepository(se).add(_execution)
 
         def _on_tick(executions: list[JobExecution]) -> None:
-            for execution in executions:
-                _persist_execution(factory, execution, collector)
+            for _execution in executions:
+                _persist_execution(factory, _execution, collector)
+
+        scheduler = Scheduler(registry, claim=_claim, on_start=_on_start)
+        for job, sched in pairs:
+            scheduler.add(job, sched)
+        watcher = CancelWatcher(factory, scheduler.active_runs)
 
         print(f"Scheduler 已启动：{len(pairs)} 条 (job, schedule) 组合。按 Ctrl+C 优雅退出。")
-        scheduler.run_forever(poll_interval_seconds=args.poll_interval, on_tick=_on_tick)
+        watcher.start()
+        try:
+            scheduler.run_forever(poll_interval_seconds=args.poll_interval, on_tick=_on_tick)
+        finally:
+            watcher.stop()
         print("Scheduler 已优雅退出。")
         return 0
 
