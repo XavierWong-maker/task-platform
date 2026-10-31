@@ -108,6 +108,7 @@ def execution_to_record(execution: JobExecution) -> ExecutionRecord:
         timeout_seconds=execution.timeout_seconds,
         max_attempts=execution.max_attempts,
         cancel_requested=execution.cancel_requested,
+        next_retry_at=execution.next_retry_at,
     )
 
 
@@ -119,6 +120,7 @@ def update_execution_record(record: ExecutionRecord, execution: JobExecution) ->
     record.error_message = execution.error_message
     record.timeout_seconds = execution.timeout_seconds
     record.max_attempts = execution.max_attempts
+    record.next_retry_at = execution.next_retry_at
 
 
 def record_to_execution(record: ExecutionRecord) -> JobExecution:
@@ -133,6 +135,7 @@ def record_to_execution(record: ExecutionRecord) -> JobExecution:
         timeout_seconds=record.timeout_seconds,
         max_attempts=record.max_attempts,
         cancel_requested=record.cancel_requested,
+        next_retry_at=record.next_retry_at,
     )
 
 

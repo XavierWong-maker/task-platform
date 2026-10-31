@@ -99,6 +99,7 @@ class JobExecution:
     timeout_seconds: float | None = None
     max_attempts: int | None = None
     cancel_requested: bool = False  # 数据库持有：由 request_cancel 写入，执行结束的回写不覆盖
+    next_retry_at: datetime | None = None  # RETRYING 时的下次重试时刻；被sweeper 认领后清空
 
     @property
     def duration_seconds(self) -> float:

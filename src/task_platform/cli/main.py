@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from task_platform.bootstrap import build_registry, load_active_schedules, sync_jobs_to_db
 from task_platform.cancellation import CancelOutcome, CancelWatcher, request_cancel
+from task_platform.cli.queue_commands import run_dispatch, run_worker
 from task_platform.domain.enums import JobStatus, ScheduleType
 from task_platform.domain.models import Job, JobExecution
 from task_platform.domain.schedule import Schedule
@@ -105,6 +106,31 @@ def _build_parser() -> argparse.ArgumentParser:
 
     resume_parser = subparsers.add_parser("resume", help="重新运行一个 RECOVERABLE 的运行")
     resume_parser.add_argument("run_id")
+
+    dispatch_parser = subparsers.add_parser(
+        "dispatch", help="启动 Dispatcher:按调度规则向队列投递任务并投递到期重试（Ctrl+C 优雅退出）"
+    )
+    dispatch_parser.add_argument("--poll-interval", type=float, default=1.0)
+
+    worker_parser = subparsers.add_parser(
+        "worker", help="启动 Worker：从队列消费并执行任务（可同时启动多个）"
+    )
+    worker_parser.add_argument("--consumer", default=None, help="消费者名称，默认 <主机名>-<pid>")
+    worker_parser.add_argument(
+        "--block-seconds", type=float, default=1.0, help="队列为空时每次阻塞等待的秒数"
+    )
+    worker_parser.add_argument(
+        "--stale-after",
+        type=float,
+        default=60.0,
+        help="pending 消息空闲超过该秒数即视为原 Worker 已崩溃并被接管；0 表示不接管",
+    )
+    worker_parser.add_argument(
+        "--heartbeat-interval",
+        type=float,
+        default=None,
+        help="心跳续约间隔秒数，默认 stale-after / 3",
+    )
 
     serve_parser = subparsers.add_parser(
         "serve", help="启动 Scheduler 主循环（阻塞运行，Ctrl+C 优雅退出）"
@@ -276,6 +302,20 @@ def _main(argv: list[str] | None, collector: LogCollector) -> int:
             f"schedule_id={new_schedule.id} job={job.name} type={new_schedule.schedule_type.value}"
         )
         return 0
+
+    if args.command == "dispatch":
+        return run_dispatch(factory, poll_interval=args.poll_interval)
+
+    if args.command == "worker":
+        return run_worker(
+            factory,
+            registry,
+            collector,
+            consumer=args.consumer,
+            block_seconds=args.block_seconds,
+            stale_after=args.stale_after,
+            heartbeat_interval=args.heartbeat_interval,
+        )
 
     if args.command == "serve":
         with session_scope(factory) as s:

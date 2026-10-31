@@ -10,7 +10,7 @@
 
     conda create -n task-platform python=3.12 -y
     conda activate task-platform
-    pip install pytest ruff mypy pre-commit "sqlalchemy>=2.0" "alembic>=1.13" "fastapi>=0.115" "uvicorn>=0.30" httpx2
+    pip install pytest ruff mypy pre-commit "sqlalchemy>=2.0" "alembic>=1.13" "fastapi>=0.115" "uvicorn>=0.30" "reids>=5.0" httpx2
     git init
     pre-commit install
 
@@ -139,6 +139,53 @@ API：`POST /api/v1/executions/{run_id}/cancel`。
     python -m task_platform.cli.main history      # 执行历史还在
     python -m task_platform.cli.main serve        # 再次启动，沿用同一个 Job（id 不变）
 
+## 队列模式（阶段 8）
+
+调度与执行分离：`dispatch` 只负责按调度规则向 Redis 投递任务，`worker` 负责消费并执行，可以同时启动多个。
+
+    dispatch --(Redis Streams)--> worker × N --> SQLite（执行记录/日志）
+        |                                              ^
+        +-- 到期重试：扫描 next_retry_at 并投递 ----------+
+
+### 启动 Redis（Docker）
+
+    docker run -d --name task-platform-redis -p 6379:6379 -v task-platform-redis-data:/data redis:7-alpine redis-server --appendonly yes
+    docker exec -it task-platform-redis redis-cli ping    # 返回 PONG
+
+之后用 `docker stop/start task-platform-redis` 启停。如果 6379 被占用，把 `-p` 的左边改成别的端口（例如 `16379:6379`），并同步修改下面的 URL。
+
+环境变量（环境变量 > 默认值）。**每个新终端都要重新设置**：
+
+    $env:TASK_PLATFORM_REDIS_URL = "redis://localhost:6379/0"   # 默认值
+    $env:TASK_PLATFORM_QUEUE_STREAM = "task_platform:jobs"      # 默认值，可不设
+
+### 命令
+
+    python -m task_platform.cli.main schedule demo-success --interval 5
+    python -m task_platform.cli.main dispatch                   # 终端 1
+    python -m task_platform.cli.main worker                     # 终端 2，可再开多个
+
+    worker 参数：
+      --consumer NAME         消费者名，默认 <主机名>-<pid>
+      --block-seconds N       队列为空时每次阻塞等待的秒数（默认 1）
+      --stale-after N         pending 消息空闲超过 N 秒视为原 Worker 已崩溃并被接管（默认 60，0 表示不接管）
+      --heartbeat-interval N  心跳续约间隔，默认 stale-after / 3
+
+> **所有 Worker 必须使用相同的 `--stale-after`**，且每个 Worker 的心跳间隔都要小于最小的 `stale-after`，
+> 否则配置较短的 Worker 会抢走别人仍在执行的消息，造成重复执行。
+>
+> 队列模式下不要用 `recover` 处理 RUNNING 记录（接管机制已覆盖）。`dispatch` 只在启动时加载调度规则，
+> 新增规则或 pause/resume 后需要重启。`serve` 仍可用，是单进程一体化模式。
+>
+> Windows 下只有 `Ctrl+C` 能触发优雅退出。
+
+### 可靠性语义
+
+- **至少一次投递**：Worker 落库成功后才 ack；落库失败或 Worker 崩溃，消息留在 pending，租约过期后被其他 Worker 接管。
+- **重复消费保护**：同一个 `(run_id, attempt)` 已处理过、或幂等键已属于别的 run 的重复消息，ack 后跳过，不会再执行。
+- **重试**：失败且有次数时写入 `next_retry_at`，由 `dispatch` 进程里的 sweeper 到期后投递，沿用同一个 `run_id`。
+- 设计与取舍见 `docs/adr/0005-queue-and-worker-design.md`。
+
 ## ETL
 
 每日订单 ETL 是注册在平台上的普通任务，可以手动运行或加调度：
@@ -228,23 +275,23 @@ Windows PowerShell 调用示例（`curl` 是 `Invoke-WebRequest` 的别名，传
 
 ## 项目状态
 
-当前阶段：**阶段 7 - 可靠性与并发控制**（已完成）
+当前阶段：**阶段 8 - Redis + Worker 解耦**（已完成）
 
-阶段 7 交付：
-- 幂等键：`idempotency_keys` 表 + 原子认领；Scheduler 按"计划触发时刻"推导键，多实例同槽位只执行一次
-- execution 进入 RUNNING 即落库；`recover` / `resume` 处理 RUNNING、悬空 RETRYING、孤儿幂等键
-- 协作式取消（`CancelToken` / `ctx.check_cancelled()`）、宽限期、超时触发令牌；
-  跨进程取消（`cancel_requested` 列 + watcher）；CLI `cancel-run` 与 API `/cancel`
-- 故障注入任务与竞态复现测试（无幂等键重复 N 次 / 有幂等键只执行 1 次）
-- 设计记录 `docs/adr/0004-reliability-design.md`（含恢复策略一览与已知限制）
+阶段 8 交付：
+- 队列抽象 `TaskQueue`：`MemoryQueue`（测试）与 `RedisStreamQueue`（生产，Redis Streams + 消费者组）
+- `Dispatcher`（只认领幂等键并投递）、`Worker`（消费、执行、落库、ack）、`dispatch` / `worker` 命令
+- 重试排期持久化（`next_retry_at` + `retry_sweeper`，迁移 0004）
+- 重复消费保护、崩溃后消息接管（`XAUTOCLAIM`）、心跳续约（`XCLAIM JUSTID`）
+- 多 Worker 验收测试：负载分担、崩溃不丢任务、Dispatcher -> 多 Worker -> 重试全链路
+- 设计记录 `docs/adr/0005-queue-and-worker-design.md`
 
-DoD 对照（蓝图 8.8 / 19 节）：
+DoD 对照（蓝图 8.9 / 19 节）：
 
 | 项 | 状态 |
 | --- | --- |
-| 代码：幂等 / 取消 / 恢复 / 故障注入 | 完成 |
-| 测试：故障注入、竞态复现与控制 | 完成（`test_race_conditions`、`test_recovery`、`test_cancellation`、`test_executor_cancel`、`test_faults`） |
-| 文档：恢复策略 | 完成（ADR-0004） |
-| 可运行：故障可恢复 | 完成（见「可靠性」） |
+| 代码：队列 / Worker / Dispatcher / 租约与接管 | 完成 |
+| 测试：消费测试（多 Worker、重复消费、崩溃接管） | 完成（`test_multi_worker`、`test_worker`、`test_redis_queue`、`test_memory_queue`、`test_dispatcher`、`test_retry_sweeper`、`test_queue_cli`） |
+| 文档：部署拓扑 | 完成（「队列模式」章节 + ADR-0005） |
+| 可运行：可多 Worker | 完成 |
 
-下一阶段：阶段 8 - Redis + Worker 解耦（队列、ack、重复消费、多 Worker）。
+下一阶段：阶段 9 - 可观测性（结构化日志、指标、告警）。

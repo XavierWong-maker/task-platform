@@ -62,6 +62,7 @@ class ExecutionRecord(Base):
     __table_args__ = (
         UniqueConstraint("run_id", "attempt", name="uq_job_executions_run_attempt"),
         Index("ix_job_executions_job_id_status", "job_id", "status"),
+        Index("ix_job_executions_next_retry_at", "next_retry_at"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -75,6 +76,7 @@ class ExecutionRecord(Base):
     timeout_seconds: Mapped[float | None] = mapped_column(Float)
     max_attempts: Mapped[int | None] = mapped_column(Integer)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    next_retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
 
 class JobLogRecord(Base):

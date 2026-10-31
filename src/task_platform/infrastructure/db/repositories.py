@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, TypeVar, cast
 
-from sqlalchemy import CursorResult, delete, func, select
+from sqlalchemy import CursorResult, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, aliased
@@ -210,7 +210,8 @@ class ExecutionRepository:
         return [record_to_execution(r) for r in self._session.scalars(stmt)]
 
     def list_dangling_retries(self) -> list[JobExecution]:
-        """状态为 RETRYING 且同一 run 没有更高 attempt 的记录：重试链在内存排期丢失后留下的残骸"""
+        """状态为 RETRYING、同一 run 没有更高 attempt、且没有持久化重试排期的记录：
+        排期丢失后留下的残骸。next_retry_at 不为空的行仍在等待 sweeper 投递，不算悬空。"""
         later = aliased(ExecutionRecord)
         superseded = (
             select(later.id)
@@ -219,10 +220,54 @@ class ExecutionRepository:
         )
         stmt = (
             select(ExecutionRecord)
-            .where(ExecutionRecord.status == JobStatus.RETRYING, ~superseded)
+            .where(
+                ExecutionRecord.status == JobStatus.RETRYING,
+                ExecutionRecord.next_retry_at.is_(None),
+                ~superseded,
+            )
             .order_by(ExecutionRecord.id)
         )
         return [record_to_execution(r) for r in self._session.scalars(stmt)]
+
+    def list_due_retries(self, now: datetime, *, limit: int = 100) -> list[JobExecution]:
+        """RETRYING 且重试时刻已到、尚未被认领的记录，最早到期的在前"""
+        stmt = (
+            select(ExecutionRecord)
+            .where(
+                ExecutionRecord.status == JobStatus.RETRYING,
+                ExecutionRecord.next_retry_at.is_not(None),
+                ExecutionRecord.next_retry_at <= now,
+            )
+            .order_by(ExecutionRecord.next_retry_at, ExecutionRecord.id)
+            .limit(limit)
+        )
+        return [record_to_execution(r) for r in self._session.scalars(stmt)]
+
+    def claim_retry(self, run_id: str, attempt: int) -> bool:
+        """原子认领一条重试排期（把 next_retry_at 清空）；多个 sweeper 并发时只有一个返回 True"""
+        stmt = (
+            update(ExecutionRecord)
+            .where(
+                ExecutionRecord.run_id == run_id,
+                ExecutionRecord.attempt == attempt,
+                ExecutionRecord.next_retry_at.is_not(None),
+            )
+            .values(next_retry_at=None)
+            .execution_options(synchronize_session=False)
+        )
+        result = cast("CursorResult[Any]", self._session.execute(stmt))
+        return result.rowcount == 1
+
+    def set_next_retry_at(self, run_id: str, attempt: int, value: datetime | None) -> bool:
+        """直接改写重试排期（投递失败时用来把认领撤回）"""
+        stmt = (
+            update(ExecutionRecord)
+            .where(ExecutionRecord.run_id == run_id, ExecutionRecord.attempt == attempt)
+            .values(next_retry_at=value)
+            .execution_options(synchronize_session=False)
+        )
+        result = cast("CursorResult[Any]", self._session.execute(stmt))
+        return result.rowcount == 1
 
     def mark_cancel_requested(self, run_id: str, attempt: int) -> bool:
         record = self._find(run_id, attempt)
