@@ -37,6 +37,7 @@ from task_platform.registry import RegisteredHandler, TaskRegistry
 
 logger = logging.getLogger("task_platform.executor")
 _POLL_SECONDS = 0.1
+TIMEOUT_ERROR_PREFIX = "job 执行超过"  # alerts 按此前缀识别超时，修改需同步
 
 
 def _wait_for(future: Future[Any], token: CancelToken, *, timeout: float, grace: float) -> None:
@@ -54,7 +55,9 @@ def _wait_for(future: Future[Any], token: CancelToken, *, timeout: float, grace:
         now = time.monotonic()
         if now >= deadline:
             token.cancel()  # 让配合的 handler 也能停下来
-            raise TimeoutError(f"job 执行超过 {timeout}s 仍未完成（线程仍可能在后台继续运行）")
+            raise TimeoutError(
+                f"{TIMEOUT_ERROR_PREFIX} {timeout}s 仍未完成（线程仍可能在后台继续运行）"
+            )
         if token.is_cancelled:
             if cancel_deadline is None:
                 cancel_deadline = now + grace

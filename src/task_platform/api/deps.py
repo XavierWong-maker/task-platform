@@ -8,8 +8,10 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session, sessionmaker
 
+from task_platform.alerts import AlertRules
 from task_platform.infrastructure.db.session import session_scope
 from task_platform.infrastructure.logging.collector import LogCollector
+from task_platform.infrastructure.queue.base import TaskQueue
 from task_platform.registry import TaskRegistry
 
 
@@ -37,3 +39,13 @@ def get_executor_pool(request: Request) -> ThreadPoolExecutor:
 def get_log_collector(request: Request) -> LogCollector:
     collector: LogCollector = request.app.state.log_collector
     return collector
+
+
+def get_queue(request: Request) -> TaskQueue | None:
+    queue: TaskQueue | None = request.app.state.queue
+    return queue
+
+
+def get_alert_rules(request: Request) -> AlertRules:
+    rules: AlertRules = request.app.state.alert_rules
+    return rules

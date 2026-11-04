@@ -24,7 +24,6 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import time as time_cls
@@ -33,6 +32,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from task_platform.bootstrap import build_registry, load_active_schedules, sync_jobs_to_db
 from task_platform.cancellation import CancelOutcome, CancelWatcher, request_cancel
+from task_platform.cli.alert_commands import run_alerts
 from task_platform.cli.queue_commands import run_dispatch, run_worker
 from task_platform.domain.enums import JobStatus, ScheduleType
 from task_platform.domain.models import Job, JobExecution
@@ -57,6 +57,7 @@ from task_platform.infrastructure.db.session import (
     session_scope,
 )
 from task_platform.infrastructure.logging.collector import LogCollector, collecting_logs
+from task_platform.infrastructure.logging.structured import structured_logging
 from task_platform.recovery import recover_interrupted
 from task_platform.registry import TaskRegistry
 from task_platform.scheduler import Scheduler
@@ -132,6 +133,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="心跳续约间隔秒数，默认 stale-after / 3",
     )
 
+    alerts_parser = subparsers.add_parser(
+        "alerts", help="评估告警规则（连续失败 / 超时 / 队列堆积）；有告警时退出码为 1"
+    )
+    alerts_parser.add_argument(
+        "--with-queue", action="store_true", help="同时检查队列积压（需要可连接的 Redis）"
+    )
+    alerts_parser.add_argument(
+        "--watch", type=float, default=None, metavar="SECONDS", help="常驻运行，每隔 N 秒检查一次"
+    )
+
     serve_parser = subparsers.add_parser(
         "serve", help="启动 Scheduler 主循环（阻塞运行，Ctrl+C 优雅退出）"
     )
@@ -167,17 +178,23 @@ def _parse_daily(value: str) -> time_cls:
     return time_cls(int(hour_str), int(minute_str))
 
 
+_SERVICE_BY_COMMAND = {
+    "serve": "scheduler",
+    "dispatch": "dispatcher",
+    "worker": "worker",
+    "alerts": "alerts",
+}
+
+
 def main(argv: list[str] | None = None) -> int:
-    # 放在 main() 里而不是模块顶层：仅导入本模块（如测试）不应改动全局日志配置
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    with collecting_logs() as collector:
-        return _main(argv, collector)
+    # 日志配置放在 main() 里而不是模块顶层：仅导入本模块（如测试）不应改动全局日志配置
+    args = _build_parser().parse_args(argv)
+    service = _SERVICE_BY_COMMAND.get(args.command, "cli")
+    with structured_logging(service), collecting_logs() as collector:
+        return _main(args, collector)
 
 
-def _main(argv: list[str] | None, collector: LogCollector) -> int:
-    parser = _build_parser()
-    args = parser.parse_args(argv)
-
+def _main(args: argparse.Namespace, collector: LogCollector) -> int:
     factory = _setup_db()
     registry: TaskRegistry = build_registry()
     with session_scope(factory) as s:
@@ -302,6 +319,9 @@ def _main(argv: list[str] | None, collector: LogCollector) -> int:
             f"schedule_id={new_schedule.id} job={job.name} type={new_schedule.schedule_type.value}"
         )
         return 0
+
+    if args.command == "alerts":
+        return run_alerts(factory, with_queue=args.with_queue, watch=args.watch)
 
     if args.command == "dispatch":
         return run_dispatch(factory, poll_interval=args.poll_interval)

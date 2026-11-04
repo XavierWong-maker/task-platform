@@ -142,3 +142,39 @@ class JobLogResponse(BaseModel):
 class CancelResponse(BaseModel):
     run_id: str
     outcome: str
+
+
+class JobMetricsResponse(BaseModel):
+    job: str
+    status_counts: dict[str, int]
+    retry_attempts: int
+    success_rate: float | None
+    failure_rate: float | None
+    avg_duration_seconds: float | None
+    max_duration_seconds: float
+
+
+class QueueMetricsResponse(BaseModel):
+    depth: int | None
+    pending: int | None
+
+
+class MetricsResponse(BaseModel):
+    generated_at: datetime
+    window_seconds: float | None
+    jobs: list[JobMetricsResponse]
+    queue: QueueMetricsResponse
+
+
+class AlertResponse(BaseModel):
+    rule: str
+    subject: str
+    severity: str
+    message: str
+    value: float
+    threshold: float
+
+
+class AlertsResponse(BaseModel):
+    generated_at: datetime
+    alerts: list[AlertResponse]

@@ -10,7 +10,7 @@
 
     conda create -n task-platform python=3.12 -y
     conda activate task-platform
-    pip install pytest ruff mypy pre-commit "sqlalchemy>=2.0" "alembic>=1.13" "fastapi>=0.115" "uvicorn>=0.30" "reids>=5.0" httpx2
+    pip install pytest ruff mypy pre-commit "sqlalchemy>=2.0" "alembic>=1.13" "fastapi>=0.115" "uvicorn>=0.30" "redis>=5.0" httpx2
     git init
     pre-commit install
 
@@ -186,6 +186,65 @@ API：`POST /api/v1/executions/{run_id}/cancel`。
 - **重试**：失败且有次数时写入 `next_retry_at`，由 `dispatch` 进程里的 sweeper 到期后投递，沿用同一个 `run_id`。
 - 设计与取舍见 `docs/adr/0005-queue-and-worker-design.md`。
 
+## 可观测性（阶段 9）
+
+### 结构化日志
+
+    $env:TASK_PLATFORM_LOG_FORMAT = "json"     # text（默认）| json
+    $env:TASK_PLATFORM_LOG_LEVEL = "INFO"      # 默认 INFO
+
+JSON 日志每行一条，包含 `timestamp`、`level`、`service`、`logger`、`message`，
+以及 `job_id`、`run_id`、`attempt` 等上下文字段。任务失败后可以用 `run_id` 过滤出完整执行链路。
+`service` 取值：scheduler / dispatcher / worker / alerts / api / cli。
+键名含 password / token / secret 等的字段会被脱敏为 `***`（只检查字段名，不要把敏感值写进 message）。
+
+### 指标
+
+    Invoke-RestMethod http://127.0.0.1:8000/api/v1/metrics
+    Invoke-RestMethod "http://127.0.0.1:8000/api/v1/metrics?window_seconds=3600"
+    (Invoke-WebRequest http://127.0.0.1:8000/metrics).Content
+
+指标从数据库（执行记录）现算：各状态次数、成功率/失败率、平均与最大耗时、重试次数。
+成功率 = SUCCESS / (SUCCESS + FAILED)，还没有终态时为 `null`。
+队列长度默认不采集，启动 API 前设置 `TASK_PLATFORM_METRICS_QUEUE=1`（需要可连接的 Redis）。
+
+Prometheus 指标：`job_execution_total{job,status}`、`job_executions_active{job,status}`、
+`job_retry_total{job}`、`job_duration_seconds_sum/_count{job}`、`job_duration_seconds_max{job}`、
+`queue_depth{queue}`、`queue_pending{queue}`。
+
+抓取配置（**必须** `honor_labels: true`，否则应用的 `job` 标签会被改名为 `exported_job`）：
+
+    scrape_configs:
+      - job_name: task-platform
+        metrics_path: /metrics
+        honor_labels: true
+        static_configs:
+          - targets: ["localhost:8000"]
+
+PromQL 示例：
+
+    # 最近 1 小时成功率
+    sum by (job) (increase(job_execution_total{status="SUCCESS"}[1h]))
+      / sum by (job) (increase(job_execution_total{status=~"SUCCESS|FAILED"}[1h]))
+    # 平均耗时
+    rate(job_duration_seconds_sum[5m]) / rate(job_duration_seconds_count[5m])
+
+### 告警
+
+    python -m task_platform.cli.main alerts                 # 评估一次：无告警退出码 0，有告警退出码 1
+    python -m task_platform.cli.main alerts --with-queue    # 同时检查队列积压（需要 Redis）
+    python -m task_platform.cli.main alerts --watch 10      # 常驻，每 10 秒检查一次，Ctrl+C 退出
+
+`GET /api/v1/alerts` 返回当前正在触发的告警。常驻模式下告警只在"新触发 / 已恢复"时写一次日志。
+
+| 规则 | 触发条件 | 默认 | 环境变量 |
+| --- | --- | --- | --- |
+| consecutive_failures（CRITICAL） | 最近的最终结果连续 N 次 FAILED | 3 | `TASK_PLATFORM_ALERT_CONSECUTIVE_FAILURES` |
+| timeouts（WARNING） | 窗口内超时尝试数 >= N | 3 次 / 3600 秒 | `TASK_PLATFORM_ALERT_TIMEOUT_COUNT`、`TASK_PLATFORM_ALERT_TIMEOUT_WINDOW_SECONDS` |
+| queue_backlog（WARNING） | 队列未消费消息数 >= N | 100 | `TASK_PLATFORM_ALERT_QUEUE_DEPTH` |
+
+已停用的任务不告警；队列读不到时不产生告警。设计与取舍见 `docs/adr/0006-observability-design.md`。
+
 ## ETL
 
 每日订单 ETL 是注册在平台上的普通任务，可以手动运行或加调度：
@@ -230,6 +289,9 @@ API：`POST /api/v1/executions/{run_id}/cancel`。
 | GET | /api/v1/executions | 执行记录，支持 `job_id`、`status`、`started_after`、`started_before`、分页 |
 | GET | /api/v1/executions/{run_id} | 一次运行及其全部尝试 |
 | GET | /api/v1/executions/{run_id}/logs | 运行日志，支持 `attempt`、分页 |
+| GET | /api/v1/metrics | 任务指标快照（JSON），支持 `window_seconds` |
+| GET | /metrics | Prometheus 文本格式指标（全量，不带窗口） |
+| GET | /api/v1/alerts | 当前正在触发的告警（实时评估） |
 
 统一错误格式：
 
@@ -275,23 +337,24 @@ Windows PowerShell 调用示例（`curl` 是 `Invoke-WebRequest` 的别名，传
 
 ## 项目状态
 
-当前阶段：**阶段 8 - Redis + Worker 解耦**（已完成）
+当前阶段：**阶段 9 - 可观测性**（已完成）
 
-阶段 8 交付：
-- 队列抽象 `TaskQueue`：`MemoryQueue`（测试）与 `RedisStreamQueue`（生产，Redis Streams + 消费者组）
-- `Dispatcher`（只认领幂等键并投递）、`Worker`（消费、执行、落库、ack）、`dispatch` / `worker` 命令
-- 重试排期持久化（`next_retry_at` + `retry_sweeper`，迁移 0004）
-- 重复消费保护、崩溃后消息接管（`XAUTOCLAIM`）、心跳续约（`XCLAIM JUSTID`）
-- 多 Worker 验收测试：负载分担、崩溃不丢任务、Dispatcher -> 多 Worker -> 重试全链路
-- 设计记录 `docs/adr/0005-queue-and-worker-design.md`
+阶段 9 交付：
+- 结构化 JSON 日志（`structured_logging`、`JsonFormatter`），带 `job_id` / `run_id`，敏感字段脱敏
+- 指标采集 `collect_metrics`：状态计数、成功/失败率、耗时、重试次数、队列长度
+- 指标接口：`GET /api/v1/metrics`（JSON）、`GET /metrics`（Prometheus 文本）
+- 基础告警：连续失败 / 超时 / 队列积压；`alerts` 命令（含 `--watch`）、`GET /api/v1/alerts`、告警日志
+- 设计记录 `docs/adr/0006-observability-design.md`
 
-DoD 对照（蓝图 8.9 / 19 节）：
+DoD 对照（蓝图 8.10 / 19 节）：
 
 | 项 | 状态 |
 | --- | --- |
-| 代码：队列 / Worker / Dispatcher / 租约与接管 | 完成 |
-| 测试：消费测试（多 Worker、重复消费、崩溃接管） | 完成（`test_multi_worker`、`test_worker`、`test_redis_queue`、`test_memory_queue`、`test_dispatcher`、`test_retry_sweeper`、`test_queue_cli`） |
-| 文档：部署拓扑 | 完成（「队列模式」章节 + ADR-0005） |
-| 可运行：可多 Worker | 完成 |
+| 代码：结构化日志 / 指标 / 告警 | 完成 |
+| 测试：告警规则测试 | 完成（`test_alerts`、`test_alerts_rules`、`test_alerts_cli_api`、`test_metrics`、`test_api_metrics`、`test_prometheus`、`test_structured_logging`） |
+| 文档：仪表盘截图说明 | 部分完成：提供 Prometheus 抓取配置与 PromQL 示例；Grafana 仪表盘属可选项，未做 |
+| 可运行：可观测 | 完成（不进入代码，通过日志、`/metrics`、`/api/v1/alerts`、`alerts` 命令判断健康状态） |
 
-下一阶段：阶段 9 - 可观测性（结构化日志、指标、告警）。
+已知限制见 ADR-0006（未实现 scheduler_delay / data_quality 指标、告警无历史与通知渠道、超时按消息前缀识别）。
+
+下一阶段：阶段 10 - Docker 与 CI（Dockerfile、Compose、PostgreSQL、CI 流水线）。

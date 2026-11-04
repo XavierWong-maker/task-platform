@@ -292,6 +292,80 @@ class ExecutionRepository:
         )
         return list(self._session.scalars(stmt))
 
+    def count_by_job_and_status(
+        self, *, since: datetime | None = None
+    ) -> list[tuple[str, JobStatus, int]]:
+        """按 (任务名, 状态) 统计行数；since 不为空时只统计 started_at >= since 的记录"""
+        stmt = (
+            select(JobRecord.name, ExecutionRecord.status, func.count())
+            .select_from(ExecutionRecord)
+            .join(JobRecord, JobRecord.id == ExecutionRecord.job_id)
+            .group_by(JobRecord.name, ExecutionRecord.status)
+            .order_by(JobRecord.name, ExecutionRecord.status)
+        )
+        if since is not None:
+            stmt = stmt.where(ExecutionRecord.started_at >= since)
+        return [(name, status, int(n)) for name, status, n in self._session.execute(stmt)]
+
+    def count_retry_attempts_by_job(self, *, since: datetime | None = None) -> dict[str, int]:
+        """每个任务实际执行过的重试次数（attempt > 1 的行数）"""
+        stmt = (
+            select(JobRecord.name, func.count())
+            .select_from(ExecutionRecord)
+            .join(JobRecord, JobRecord.id == ExecutionRecord.job_id)
+            .where(ExecutionRecord.attempt > 1)
+            .group_by(JobRecord.name)
+        )
+        if since is not None:
+            stmt = stmt.where(ExecutionRecord.started_at >= since)
+        return {name: int(n) for name, n in self._session.execute(stmt)}
+
+    def list_durations(self, *, since: datetime | None = None) -> list[tuple[str, float]]:
+        """已结束（SUCCESS / FAILED）且有起止时间的尝试：(任务名, 耗时秒)"""
+        stmt = (
+            select(JobRecord.name, ExecutionRecord.started_at, ExecutionRecord.finished_at)
+            .select_from(ExecutionRecord)
+            .join(JobRecord, JobRecord.id == ExecutionRecord.job_id)
+            .where(
+                ExecutionRecord.status.in_([JobStatus.SUCCESS, JobStatus.FAILED]),
+                ExecutionRecord.started_at.is_not(None),
+                ExecutionRecord.finished_at.is_not(None),
+            )
+        )
+        if since is not None:
+            stmt = stmt.where(ExecutionRecord.started_at >= since)
+        return [
+            (name, (finished - started).total_seconds())
+            for name, started, finished in self._session.execute(stmt)
+        ]
+
+    def recent_final_statuses(self, job_id: str, *, limit: int) -> list[JobStatus]:
+        """某任务最近 limit 条"最终结果"（SUCCESS / FAILED），最新的在前（按 id DESC）"""
+        stmt = (
+            select(ExecutionRecord.status)
+            .where(
+                ExecutionRecord.job_id == job_id,
+                ExecutionRecord.status.in_([JobStatus.SUCCESS, JobStatus.FAILED]),
+            )
+            .order_by(ExecutionRecord.id.desc())
+            .limit(limit)
+        )
+        return list(self._session.scalars(stmt))
+
+    def count_timeouts_by_job(self, prefix: str, *, since: datetime) -> dict[str, int]:
+        """started_at >= since 且 error_message 以 prefix 开头的尝试数（按任务名）"""
+        stmt = (
+            select(JobRecord.name, func.count())
+            .select_from(ExecutionRecord)
+            .join(JobRecord, JobRecord.id == ExecutionRecord.job_id)
+            .where(
+                ExecutionRecord.error_message.startswith(prefix, autoescape=True),
+                ExecutionRecord.started_at >= since,
+            )
+            .group_by(JobRecord.name)
+        )
+        return {name: int(n) for name, n in self._session.execute(stmt)}
+
     def _find(self, run_id: str, attempt: int) -> ExecutionRecord | None:
         stmt = select(ExecutionRecord).where(
             ExecutionRecord.run_id == run_id,
