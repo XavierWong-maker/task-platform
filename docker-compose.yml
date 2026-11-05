@@ -1,0 +1,107 @@
+name: task-platform
+
+x-app-env: &app-env
+  TASK_PLATFORM_DB_URL: postgresql://task_platform:${POSTGRES_PASSWORD:-postgres}@postgres:5432/task_platform
+  TASK_PLATFORM_REDIS_URL: redis://redis:6379/0
+  TASK_PLATFORM_LOG_FORMAT: json
+
+x-app: &app
+  build: .
+  image: task-platform:dev
+  environment: *app-env
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: task_platform
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: task_platform
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "task_platform", "-d", "task_platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # 一次性：执行迁移并同步任务定义，其余服务等它成功后再启动
+  init:
+    <<: *app
+    command: ["python", "-m", "task_platform.cli.main", "list"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *app
+    environment:
+      <<: *app-env
+      TASK_PLATFORM_METRICS_QUEUE: "1"
+    ports:
+      - "8000:8000"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  dispatch:
+    <<: *app
+    command: ["python", "-m", "task_platform.cli.main", "dispatch"]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    stop_grace_period: 15s
+    restart: on-failure  # 没有任何已启用的调度规则时会退出码 1，加规则后自动拉起
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "task_platform.cli.main", "worker"]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    volumes:
+      - worker-data:/app/data
+    stop_grace_period: 60s  # 优雅退出：处理完当前消息
+    restart: unless-stopped
+
+  # 运维工具：docker compose run --rm cli <子命令>，不随 up 启动
+  cli:
+    <<: *app
+    profiles: ["tools"]
+    entrypoint: ["python", "-m", "task_platform.cli.main"]
+    command: ["list"]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+volumes:
+  pg-data:
+  redis-data:
+  worker-data:

@@ -450,7 +450,9 @@ class IdempotencyRepository:
         self._session = session
 
     def try_claim(self, key: str, job_id: str, run_id: str) -> bool:
-        """认领成功返回 True；键已被占用返回 False（不抛异常）"""
+        """认领成功返回 True；键已被占用返回 False（不抛异常）。
+        用 RETURNING 判断输赢：ON CONFLICT DO NOTHING 只有真正插入了才会返回行，
+        不依赖 rowcount（ORM 方式执行的 INSERT 在 PostgreSQL 上 rowcount 不可靠）。"""
         dialect_insert = (
             pg_insert if self._session.get_bind().dialect.name == "postgresql" else sqlite_insert
         )
@@ -459,9 +461,9 @@ class IdempotencyRepository:
             dialect_insert(IdempotencyRecord)
             .values(key=key, job_id=job_id, run_id=run_id, created_at=utc_now())
             .on_conflict_do_nothing(index_elements=["key"])
+            .returning(IdempotencyRecord.key)
         )
-        result = cast("CursorResult[Any]", self._session.execute(stmt))
-        return result.rowcount == 1
+        return self._session.execute(stmt).first() is not None
 
     def get_run_id(self, key: str) -> str | None:
         return self._session.scalar(

@@ -10,7 +10,7 @@
 
     conda create -n task-platform python=3.12 -y
     conda activate task-platform
-    pip install pytest ruff mypy pre-commit "sqlalchemy>=2.0" "alembic>=1.13" "fastapi>=0.115" "uvicorn>=0.30" "redis>=5.0" httpx2
+    pip install pytest ruff mypy pre-commit "sqlalchemy>=2.0" "alembic>=1.13" "fastapi>=0.115" "uvicorn>=0.30" "redis>=5.0" "psycopg[binary]>=3.1" httpx
     git init
     pre-commit install
 
