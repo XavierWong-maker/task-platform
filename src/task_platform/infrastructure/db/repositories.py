@@ -334,10 +334,13 @@ class ExecutionRepository:
         )
         if since is not None:
             stmt = stmt.where(ExecutionRecord.started_at >= since)
-        return [
-            (name, (finished - started).total_seconds())
-            for name, started, finished in self._session.execute(stmt)
-        ]
+        durations: list[tuple[str, float]] = []
+
+        for name, started, finished in self._session.execute(stmt):
+            if started is None or finished is None:
+                continue
+            durations.append((name, (finished - started).total_seconds()))
+        return durations
 
     def recent_final_statuses(self, job_id: str, *, limit: int) -> list[JobStatus]:
         """某任务最近 limit 条"最终结果"（SUCCESS / FAILED），最新的在前（按 id DESC）"""
