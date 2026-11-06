@@ -16,6 +16,14 @@ from task_platform.infrastructure.db.base import Base
 DEFAULT_DATABASE_URL = "sqlite:///data/task_platform.db"
 
 
+def normalize_database_url(url: str) -> str:
+    """postgres:// 与 postgresql:// 默认会选 psycopg2；本项目只依赖 psycopg 3，统一改写"""
+    for prefix in ("postgresql://", "postgres://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url.removeprefix(prefix)
+    return url
+
+
 def _ensure_sqlite_parent_dir(url: str) -> None:
     """file-based sqlite URL 对应的父目录若不存在，sqlite3 无法自动创建——
     项目骨架里目前没有 data/ 目录，首次真实运行前必须先建好
@@ -29,9 +37,12 @@ def _ensure_sqlite_parent_dir(url: str) -> None:
 
 
 def create_db_engine(url: str | None = None, *, echo: bool = False) -> Engine:
-    resolved_url = url or get_database_url()
+    resolved_url = normalize_database_url(url or get_database_url())
     _ensure_sqlite_parent_dir(resolved_url)
-    engine = create_engine(resolved_url, echo=echo)
+    kwargs: dict[str, Any] = {}
+    if not resolved_url.startswith("sqlite"):
+        kwargs["pool_pre_ping"] = True  # 数据库重启后自动剔除失效连接
+    engine = create_engine(resolved_url, echo=echo, **kwargs)
     if engine.dialect.name == "sqlite":
 
         @event.listens_for(engine, "connect")

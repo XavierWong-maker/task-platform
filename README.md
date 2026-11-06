@@ -10,7 +10,7 @@
 
     conda create -n task-platform python=3.12 -y
     conda activate task-platform
-    pip install pytest ruff mypy pre-commit "sqlalchemy>=2.0" "alembic>=1.13" "fastapi>=0.115" "uvicorn>=0.30" "redis>=5.0" httpx2
+    pip install -e ".[dev]"
     git init
     pre-commit install
 
@@ -335,26 +335,79 @@ Windows PowerShell 调用示例（`curl` 是 `Invoke-WebRequest` 的别名，传
 - `Scheduler.run_forever(on_tick=...)` 每轮把触发的 execution 回传给调用方（CLI 在此持久化），
   Scheduler 本身不依赖数据库。
 
+## 容器化与 CI（阶段 10）
+
+### PostgreSQL
+
+驱动是 psycopg 3。`postgresql://` 和 `postgres://` 开头的 URL 会被自动改写为 `postgresql+psycopg://`：
+
+    $env:TASK_PLATFORM_DB_URL = "postgresql://user:password@localhost:5432/task_platform"
+
+PG 集成测试默认跳过。设置专用测试库后才会运行（**库名必须包含 `test`**，每个用例会清空 `public` schema）：
+
+    docker run -d --name task-platform-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=task_platform_test -p 15432:5432 postgres:16-alpine
+    $env:TASK_PLATFORM_TEST_PG_URL = "postgresql+psycopg://postgres:postgres@localhost:15432/task_platform_test"
+    python -m pytest tests/integration/test_postgres.py
+
+### Docker Compose：一条命令启动完整平台
+
+    docker compose up -d --build
+    docker compose ps -a
+
+| 服务 | 作用 |
+| --- | --- |
+| postgres / redis | 数据库与队列，带健康检查；不向宿主机发布端口 |
+| init | 一次性：执行迁移并同步任务定义；其余服务等它成功后才启动 |
+| api | FastAPI，`http://127.0.0.1:8000`（`/docs`、`/health`、`/metrics`） |
+| dispatch | 按调度规则向队列投递任务；没有调度规则时退出码 1，`on-failure` 会自动重启 |
+| worker | 消费并执行任务；`stop_grace_period: 60s`，处理完当前消息才退出 |
+| cli | 运维工具，不随 `up` 启动：`docker compose run --rm cli <子命令>` |
+
+首次使用：
+
+    docker compose run --rm cli schedule demo-success --interval 5
+    docker compose restart dispatch              # dispatch 只在启动时加载调度规则
+    docker compose up -d --scale worker=3        # 水平扩 Worker
+
+- 所有服务默认输出 JSON 日志；api 开启了队列指标（`TASK_PLATFORM_METRICS_QUEUE=1`）。
+- 数据库密码用 `POSTGRES_PASSWORD` 覆盖（默认 `postgres` 仅用于本地开发；可写在 `.env`，已被 `.gitignore` 忽略）。
+- 数据保存在命名卷 `pg-data` / `redis-data` / `worker-data`。`docker compose down` 保留数据，**`down -v` 会删除**。
+- 只有 worker 挂载了 `/app/data`：ETL 输出等文件在 api 或 `cli run` 的容器里是临时的。
+- 镜像是单镜像多角色：默认命令是 API，dispatch / worker 在 Compose 里覆盖 `command`；以非 root 用户运行。
+
+### CI（GitHub Actions）
+
+`.github/workflows/ci.yml` 在 push 到 main/master 和每个 PR 上运行：
+
+| job | 内容 |
+| --- | --- |
+| lint | `ruff check`、`ruff format --check`、`mypy src` |
+| test | pytest，连真实的 PostgreSQL 与 Redis 服务容器；**任何测试被 skip 都算失败**（防止服务没起来时假绿） |
+| smoke | `scripts/smoke_test.sh`：构建镜像、启动 Compose 栈，验证 dispatch → worker 端到端、`/metrics`、`/api/v1/alerts` 和 worker 的优雅退出 |
+
+smoke 使用独立的 Compose 项目名 `task-platform-smoke`，不会影响本地开发栈的数据卷；本地运行需要先停掉占用 8000 端口的服务。设计取舍与已知限制见 `docs/adr/0007-docker-and-ci-design.md`。
+
 ## 项目状态
 
-当前阶段：**阶段 9 - 可观测性**（已完成）
+当前阶段：**阶段 10 - Docker 与 CI**（已完成）
 
-阶段 9 交付：
-- 结构化 JSON 日志（`structured_logging`、`JsonFormatter`），带 `job_id` / `run_id`，敏感字段脱敏
-- 指标采集 `collect_metrics`：状态计数、成功/失败率、耗时、重试次数、队列长度
-- 指标接口：`GET /api/v1/metrics`（JSON）、`GET /metrics`（Prometheus 文本）
-- 基础告警：连续失败 / 超时 / 队列积压；`alerts` 命令（含 `--watch`）、`GET /api/v1/alerts`、告警日志
-- 设计记录 `docs/adr/0006-observability-design.md`
+阶段 10 交付：
+- Dockerfile（单镜像多角色、非 root、依赖层缓存）
+- PostgreSQL 支持（psycopg 3、URL 自动改写）与一套 PG 集成测试
+- docker-compose.yml：postgres / redis / init / api / dispatch / worker，带健康检查与依赖等待
+- GitHub Actions：lint、test（PG + Redis 服务容器）、smoke（Compose 端到端）
+- 设计记录 `docs/adr/0007-docker-and-ci-design.md`
 
-DoD 对照（蓝图 8.10 / 19 节）：
+DoD 对照（蓝图 8.11 / 19 节）：
 
 | 项 | 状态 |
 | --- | --- |
-| 代码：结构化日志 / 指标 / 告警 | 完成 |
-| 测试：告警规则测试 | 完成（`test_alerts`、`test_alerts_rules`、`test_alerts_cli_api`、`test_metrics`、`test_api_metrics`、`test_prometheus`、`test_structured_logging`） |
-| 文档：仪表盘截图说明 | 部分完成：提供 Prometheus 抓取配置与 PromQL 示例；Grafana 仪表盘属可选项，未做 |
-| 可运行：可观测 | 完成（不进入代码，通过日志、`/metrics`、`/api/v1/alerts`、`alerts` 命令判断健康状态） |
+| 代码：Dockerfile / Compose | 完成 |
+| 测试：CI 绿灯 | 完成（lint + test + smoke 全绿） |
+| 文档：部署说明 | 完成（本章与 ADR-0007） |
+| 可运行：一键启动 | 完成（`docker compose up -d --build`） |
+| 部署前项（蓝图 17 节） | healthcheck、依赖等待、优雅关闭已做；**资源限制未做** |
 
-已知限制见 ADR-0006（未实现 scheduler_delay / data_quality 指标、告警无历史与通知渠道、超时按消息前缀识别）。
+阶段 9 的交付见"可观测性"一章与 ADR-0006。已知限制见 ADR-0007。
 
-下一阶段：阶段 10 - Docker 与 CI（Dockerfile、Compose、PostgreSQL、CI 流水线）。
+下一阶段：阶段 11 - DAG 工作流（TaskNode / Dependency、拓扑排序、并行节点与失败传播）。
