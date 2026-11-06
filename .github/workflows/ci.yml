@@ -72,3 +72,12 @@ jobs:
             echo "::error::Tests were skipped; PG/Redis services were probably not reachable."
             exit 1
           fi
+
+  smoke:
+    needs: [ lint, test ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compose smoke test
+        run: bash scripts/smoke_test.sh
