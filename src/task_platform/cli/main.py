@@ -34,6 +34,7 @@ from task_platform.bootstrap import build_registry, load_active_schedules, sync_
 from task_platform.cancellation import CancelOutcome, CancelWatcher, request_cancel
 from task_platform.cli.alert_commands import run_alerts
 from task_platform.cli.queue_commands import run_dispatch, run_worker
+from task_platform.cli.workflow_commands import add_workflow_parser, run_workflow_command
 from task_platform.domain.enums import JobStatus, ScheduleType
 from task_platform.domain.models import Job, JobExecution
 from task_platform.domain.schedule import Schedule
@@ -152,6 +153,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="Scheduler 主循环的轮询间隔",
     )
+
+    add_workflow_parser(subparsers)
 
     return parser
 
@@ -336,6 +339,9 @@ def _main(args: argparse.Namespace, collector: LogCollector) -> int:
             stale_after=args.stale_after,
             heartbeat_interval=args.heartbeat_interval,
         )
+
+    if args.command == "workflow":
+        return run_workflow_command(args, factory, registry, jobs, collector)
 
     if args.command == "serve":
         with session_scope(factory) as s:

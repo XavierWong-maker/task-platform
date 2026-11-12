@@ -56,3 +56,36 @@ class ScheduleType(StrEnum):
 
     INTERVAL = "INTERVAL"  # 固定间隔
     DAILY = "DAILY"  # 简单 cron: 每天固定时刻
+
+
+class NodeStatus(StrEnum):
+    """工作流节点的运行状态
+
+    PENDING -> RUNNING -> SUCCESS / FAILED / CANCELED
+    PENDING -> SKIPPED   （上游 FAILED / SKIPPED / CANCELED，本节点不会运行）
+    PENDING -> CANCELED
+    """
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
+    CANCELED = "CANCELED"
+
+    def is_terminal(self) -> bool:
+        return self not in (NodeStatus.PENDING, NodeStatus.RUNNING)
+
+
+class WorkflowStatus(StrEnum):
+    """工作流整体状态，由各节点状态推导（见 workflow_state.derive_workflow_status）"""
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    PARTIAL_FAILED = "PARTIAL_FAILED"  # 有成功也有失败/跳过
+    FAILED = "FAILED"  # 没有任何节点成功
+    CANCELED = "CANCELED"
+
+    def is_terminal(self) -> bool:
+        return self not in (WorkflowStatus.PENDING, WorkflowStatus.RUNNING)

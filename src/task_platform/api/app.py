@@ -16,7 +16,7 @@ from fastapi import FastAPI
 
 from task_platform.alerts import AlertRules
 from task_platform.api.errors import register_error_handlers
-from task_platform.api.routers import alerts, executions, health, jobs, metrics
+from task_platform.api.routers import alerts, executions, health, jobs, metrics, workflows
 from task_platform.bootstrap import build_registry, sync_jobs_to_db
 from task_platform.infrastructure.db.migrate import upgrade_db
 from task_platform.infrastructure.db.session import (
@@ -91,4 +91,5 @@ def create_app(
     app.include_router(metrics.router)
     app.include_router(metrics.prometheus_router)
     app.include_router(alerts.router)
+    app.include_router(workflows.router)
     return app

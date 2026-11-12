@@ -61,6 +61,9 @@ def test_tables_are_created(engine: Engine) -> None:
         "job_executions",
         "job_logs",
         "idempotency_keys",
+        "workflows",
+        "workflow_runs",
+        "workflow_node_runs",
     }
 
 

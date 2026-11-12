@@ -49,3 +49,20 @@ config（seed / order_count / dirty_ratio）、total_rows、quarantined_rows、w
 
 ### quarantine.jsonl
 每行一条被隔离的订单：`{"order": {...原始字段...}, "violations": [{"rule", "severity", "message"}]}`
+
+
+## DAG 版 ETL 的阶段产物（阶段 11）
+
+目录：`<TASK_PLATFORM_ETL_OUTPUT_DIR>/dag/`（默认 `data/output/dag/`）。阶段之间用文件交接，缺失值在 CSV 中为空串。
+
+| 阶段（节点） | 读取 | 写出 |
+| --- | --- | --- |
+| extract | — | `raw_orders.csv`、`users.csv` |
+| clean | `raw_orders.csv` | `clean_orders.csv`（统一字段格式） |
+| validate | `clean_orders.csv`、`users.csv` | `valid_orders.csv`、`quarantine.jsonl`、`quality_report.json` |
+| aggregate | `valid_orders.csv`、`users.csv` | `daily_stats.csv`（order_date、region、order_count、paid_count、gmv） |
+| report | `daily_stats.csv`、`quality_report.json` | `daily_report.csv`、`summary.json` |
+
+`summary.json`：total_rows、quarantined_rows、warning_rows、report_rows、total_gmv。
+report 阶段会先核对"聚合订单数 = 总行数 − 隔离行数"，不一致则失败。
+全部阶段成功时，`daily_report.csv` / `quality_report.json` / `quarantine.jsonl` 与单体任务 `etl-daily_orders` 的输出逐字节相同。

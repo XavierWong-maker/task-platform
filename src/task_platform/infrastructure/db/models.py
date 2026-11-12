@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, time
+from typing import Any
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Enum,
     Float,
@@ -19,7 +21,14 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from task_platform.domain.enums import BackoffStrategy, JobStatus, JobType, ScheduleType
+from task_platform.domain.enums import (
+    BackoffStrategy,
+    JobStatus,
+    JobType,
+    NodeStatus,
+    ScheduleType,
+    WorkflowStatus,
+)
 from task_platform.infrastructure.db.base import Base, UTCDateTime
 
 
@@ -109,3 +118,53 @@ class IdempotencyRecord(Base):
     job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
     run_id: Mapped[str] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class WorkflowRecord(Base):
+    """工作流定义：节点与依赖作为一个整体（JSON）读写，不拆成多张表"""
+
+    __tablename__ = "workflows"
+
+    name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    definition: Mapped[list[dict[str, Any]]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class WorkflowRunRecord(Base):
+    """一次工作流运行。definition 是运行时刻的定义快照；status 由节点状态派生后写入"""
+
+    __tablename__ = "workflow_runs"
+    __table_args__ = (
+        Index("ix_workflow_runs_workflow_name_started_at", "workflow_name", "started_at"),
+    )
+
+    run_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    workflow_name: Mapped[str] = mapped_column(ForeignKey("workflows.name", ondelete="CASCADE"))
+    status: Mapped[WorkflowStatus] = mapped_column(
+        Enum(WorkflowStatus, native_enum=False, length=16)
+    )
+    definition: Mapped[list[dict[str, Any]]] = mapped_column(JSON)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    parent_run_id: Mapped[str | None] = mapped_column(String(32))
+
+
+class WorkflowNodeRunRecord(Base):
+    """一次工作流运行中某个节点的状态。job_run_id 指向该节点任务的 run_id
+    （对应 job_executions 里的多次尝试），不是外键：run_id 单列不唯一"""
+
+    __tablename__ = "workflow_node_runs"
+
+    workflow_run_id: Mapped[str] = mapped_column(
+        ForeignKey("workflow_runs.run_id", ondelete="CASCADE"), primary_key=True
+    )
+    node_name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer)
+    status: Mapped[NodeStatus] = mapped_column(Enum(NodeStatus, native_enum=False, length=16))
+    job_run_id: Mapped[str | None] = mapped_column(String(32))
+    attempts: Mapped[int] = mapped_column(Integer)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    reused: Mapped[bool] = mapped_column(Boolean, default=False)

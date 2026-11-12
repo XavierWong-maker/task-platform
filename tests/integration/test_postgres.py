@@ -42,7 +42,16 @@ from task_platform.metrics import collect_metrics
 PG_URL = os.environ.get("TASK_PLATFORM_TEST_PG_URL")
 pytestmark = pytest.mark.skipif(not PG_URL, reason="TASK_PLATFORM_TEST_PG_URL not set")
 
-APP_TABLES = {"jobs", "schedules", "job_executions", "job_logs", "idempotency_keys"}
+APP_TABLES = {
+    "jobs",
+    "schedules",
+    "job_executions",
+    "job_logs",
+    "idempotency_keys",
+    "workflows",
+    "workflow_runs",
+    "workflow_node_runs",
+}
 
 
 @pytest.fixture

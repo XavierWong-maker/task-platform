@@ -1,0 +1,10 @@
+{
+  "name": "daily-orders-dag",
+  "nodes": [
+    {"name": "extract", "job": "etl-dag-extract"},
+    {"name": "clean", "job": "etl-dag-clean", "depends_on": ["extract"]},
+    {"name": "validate", "job": "etl-dag-validate", "depends_on": ["clean"]},
+    {"name": "aggregate", "job": "etl-dag-aggregate", "depends_on": ["validate"]},
+    {"name": "report", "job": "etl-dag-report", "depends_on": ["aggregate"]}
+  ]
+}

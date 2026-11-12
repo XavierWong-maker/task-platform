@@ -7,7 +7,13 @@ from typing import Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-from task_platform.domain.enums import BackoffStrategy, JobStatus, JobType
+from task_platform.domain.enums import (
+    BackoffStrategy,
+    JobStatus,
+    JobType,
+    NodeStatus,
+    WorkflowStatus,
+)
 
 
 class RetryPolicySchema(BaseModel):
@@ -178,3 +184,58 @@ class AlertResponse(BaseModel):
 class AlertsResponse(BaseModel):
     generated_at: datetime
     alerts: list[AlertResponse]
+
+
+class WorkflowNodeSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=128)
+    job: str = Field(min_length=1, max_length=128)
+    depends_on: list[str] = Field(default_factory=list)
+
+
+class WorkflowPut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    nodes: list[WorkflowNodeSchema] = Field(min_length=1)
+
+
+class WorkflowResponse(BaseModel):
+    name: str
+    nodes: list[WorkflowNodeSchema]
+
+
+class NodeRunResponse(BaseModel):
+    name: str
+    status: NodeStatus
+    attempts: int
+    job_run_id: str | None
+    reused: bool
+    started_at: datetime | None
+    finished_at: datetime | None
+    error_message: str | None
+
+
+class WorkflowRunResponse(BaseModel):
+    run_id: str
+    workflow: str
+    status: WorkflowStatus
+    parent_run_id: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    nodes: list[NodeRunResponse]
+
+
+class WorkflowRunSummaryResponse(BaseModel):
+    run_id: str
+    workflow: str
+    status: WorkflowStatus
+    parent_run_id: str | None
+    started_at: datetime
+    finished_at: datetime | None
+
+
+class RerunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    node: str = Field(min_length=1)
